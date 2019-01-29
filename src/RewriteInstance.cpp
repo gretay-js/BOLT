@@ -259,6 +259,13 @@ PrintGlobals("print-globals",
   cl::cat(BoltCategory));
 
 static cl::opt<bool>
+Frametables("frametables",
+  cl::desc("rewrite ocaml frametables"),
+  cl::ZeroOrMore,
+  cl::Hidden,
+  cl::cat(BoltCategory));
+
+static cl::opt<bool>
 PrintSections("print-sections",
   cl::desc("print all registered sections"),
   cl::ZeroOrMore,
@@ -1013,6 +1020,7 @@ void RewriteInstance::run() {
     processProfileData();
     if (opts::AggregateOnly)
       return;
+    updateFrametables(/* postopt */ false);
     postProcessFunctions();
     for (uint64_t Address : NonSimpleFunctions) {
       auto FI = BinaryFunctions.find(Address);
@@ -2408,10 +2416,12 @@ void RewriteInstance::readRelocations(const SectionRef &Section) {
                      << ReferencedSymbol->getName() << "\n");
       }
     } else if (IsToCode || ForceRelocation) {
+
       BC->addRelocation(Rel.getOffset(),
                         ReferencedSymbol,
                         Rel.getType(),
-                        Addend);
+                        Addend,
+                        ExtractedValue);
     } else {
       DEBUG(dbgs() << "BOLT-DEBUG: ignoring relocation from data to data\n");
     }
@@ -2614,6 +2624,11 @@ void RewriteInstance::disassembleFunctions() {
     if (Function.getLSDAAddress() != 0)
       Function.parseLSDA(getLSDAData(), getLSDAAddress());
 
+    if (opts::Frametables) {
+      // Add a label for each callsite, before CFG is built
+      Function.labelCallsites();
+    }
+
     if (!Function.buildCFG())
       continue;
 
@@ -2654,6 +2669,206 @@ void RewriteInstance::postProcessFunctions() {
   if (opts::PrintGlobals) {
     outs() << "BOLT-INFO: Global symbols:\n";
     BC->printGlobalSymbols(outs());
+  }
+}
+
+void RewriteInstance::updateFrametables(bool postopt)  {
+  // Frametables contain relocations that point to labels in the code
+  // section.  These labels are intended to mark the return address of
+  // a call instructions, They are used by Ocaml GC. However, BOLT's
+  // block reordering can move the labeled instruction, along with the
+  // label. This is incorrect and can cause the execution of the
+  // BOLTed file to crash during GC.  We fix it by modifying these
+  // relocations. We add a label for every call instruction in the
+  // program. This has to be done earlier, before CFG construction,
+  // and is only done when frametables option is enabled.  Then, we
+  // make the relocation point to this label with an addend that
+  // equals to the size of the call instruction.
+  if (!opts::Frametables) return;
+  outs() << "BOLT-INFO: Updating frametables\n";
+  // look for frametables in data section
+  auto DataSection = BC->getUniqueSectionByName(".data");
+  assert(DataSection && "missing section .data for ocaml frametables rewrite");
+  assert(BC->HasRelocations && "can't hanlde frametables without relocations");
+  for (auto &Entry : BC->getBinaryDataForSection(*DataSection)) {
+    const auto *BD = Entry.second;
+    StringRef Name = BD->getName();
+    // frametables start with a label whose format is fixed by ocaml compiler.
+    if (Name.endswith("_frametable") &&
+        Name.startswith("caml") ) {
+      uint64_t FrametableAddress = BD->getAddress();
+      uint64_t FrametableSize = BD->getSize();
+      DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+            << "Symbol " << Name << ", "
+            << "0x" + Twine::utohexstr(FrametableAddress) << ":"
+            << "0x" + Twine::utohexstr(FrametableAddress + FrametableSize) << "/"
+            << FrametableSize << "\n");
+      // This gives us the number of entries in the frame table
+      const BinaryData *FrametableBD = BC->getBinaryDataAtAddress(FrametableAddress);
+      assert (FrametableBD && "missing binary data for frametable symbol");
+      assert (FrametableBD->getSize() == FrametableSize
+              && "unexpected size of binary data for frametable");
+      DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) " <<
+            "Reading frametable at "
+            << "0x" + Twine::utohexstr(FrametableAddress) << "\n");
+      // We could read the frame_desc data structure to know how many
+      // bytes to skip to the next rel, in the same way OCaml GC does
+      // it. This would rely on the precise layout and definition of
+      // frame_desc in ocaml compiler. Instead, we rely only on the
+      // existence of relocations. We scan the addresses in the entire
+      // table and for each one check if it has a relocation to a text
+      // section.
+      assert (FrametableAddress % 8 == 0
+              || "unexpected address of frametable: not 8-byte aligned");
+      for (uint64_t i = 0; i < FrametableSize; i += 8) {
+        // assumes relocations are 8 byte aligned.
+        const Relocation *RelP = BC->getRelocationAt(FrametableAddress+i);
+        if (!RelP) continue;
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Found relocation at "
+              << "0x" + Twine::utohexstr(FrametableAddress+i)
+              << ": ");
+        DEBUG(RelP->print(dbgs()));
+        DEBUG(dbgs() << "\n");
+
+        auto *RelSymbol = RelP->Symbol;
+        assert (RelSymbol && "relocation with null as its symbol");
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Symbol " << RelSymbol->getName() << "\n");
+
+        uint64_t RelValue = RelP->Value;
+        uint64_t RelOffset = RelP->Offset;
+        int64_t Addend = RelP->Addend;
+        uint64_t Type = RelP->Type;
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "offset: "
+              << "0x" + Twine::utohexstr(RelOffset)
+              << " addend:"
+              << "0x" + Twine::utohexstr(Addend)
+              << " value: "
+              <<  "0x" + Twine::utohexstr(RelValue)
+              << "\n");
+
+        uint64_t SymbolAddress = RelValue;
+        auto Section = BC->getSectionForAddress(SymbolAddress);
+        if (!Section) {
+          DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+                "Cannot find section\n");
+          continue;
+        }
+        const bool IsToCode = Section && Section->isText();
+        if (!IsToCode)
+          continue;
+
+        // Find the function that contains the address of the relocation label.
+        auto *ContainingFunction =
+          getBinaryFunctionContainingAddress(SymbolAddress,
+                                             /*CheckPastEnd*/ true,
+                                             /*UseMaxSize*/ false);
+        assert (ContainingFunction && "can't find containing function");
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Containing function "
+              << ContainingFunction->getPrintName()
+              << "\n");
+
+        if (postopt) {
+        // This is a hack to fix a reference to a label that was removed
+        // by (UCE) and conditional.
+        // If the call site was removed as a result of dead code elimination
+        // or other optimizations, we cannot reference the label of that callsite.
+        // Ideally, we would remove this entry from the frametable,
+        // but it would require us to use the precise structure of
+        // frame_desc entries of the frametable.
+        // Instead, we leave the entry as is, but attach a label that points to
+        // an address that is guaranteed not to be a return of a call (in the new code),
+        // and therefore the GC will never need to look it up.
+        // We choose to set the label to the frame table itself.
+        //
+        // This "postopt" pass can be done faster if we store
+        // some info about frametables that we collected in the first pass,
+        // but it can get very large.
+          if (!(RelSymbol->isTemporary() && RelSymbol->isUndefined()))
+            continue;
+          uint64_t newSymbolAddress =
+            ContainingFunction->translateInputToOutputAddress(SymbolAddress);
+          outs () << "Removing relocation at "
+                  << "0x" + Twine::utohexstr(FrametableAddress+i)
+                  << " in function "
+                  << "0x" + Twine::utohexstr(ContainingFunction->getAddress())
+                  << " symbol " << RelSymbol->getName()
+                  << "at 0x" + Twine::utohexstr(SymbolAddress)
+                  << " addend:" + Twine::utohexstr(Addend)
+                  << " new address: 0x" + Twine::utohexstr(newSymbolAddress)
+                  << "\n";
+          assert (BC->removeRelocationAt(FrametableAddress+i) ||
+                  "remove relocation failed!");
+          MCSymbol *NewSymbol = BC->getOrCreateGlobalSymbol(FrametableAddress, Name);
+          BC->addRelocation(FrametableAddress+i, NewSymbol, Type);
+          continue;
+        }
+
+        // Find the previous instruction (i.e., right before the
+        // address in the relocation), without making assumptions
+        // about the size of that instruction, and then check that
+        // the instruction is a call.
+        // CR: does it work when the containing function is PIC,
+        // in which case its start address is an offset.
+        uint64_t FunctionStartAddress = ContainingFunction->getAddress();
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Containing function start address "
+              << "0x" + Twine::utohexstr(FunctionStartAddress)
+              << "\n");
+        if (FunctionStartAddress == SymbolAddress) {
+          // relocation is referring to the end of the previous function
+          ContainingFunction =
+            getBinaryFunctionContainingAddress(SymbolAddress-1,
+                                               /*CheckPastEnd*/ true,
+                                               /*UseMaxSize*/ false);
+          assert (ContainingFunction && "can't find containing function");
+          DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+                << "SymbolAddress is a start of a function.\n"
+                << "Contianing function is the previous one: "
+                << ContainingFunction->getPrintName()
+                << "\n");
+          FunctionStartAddress = ContainingFunction->getAddress();
+          DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+                << "Containing function start address "
+                << "0x" + Twine::utohexstr(FunctionStartAddress)
+                << "\n");
+        }
+        assert (FunctionStartAddress < SymbolAddress);
+        uint64_t Offset = SymbolAddress-FunctionStartAddress-1;
+        const MCInst *Instr = nullptr;
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) " << "offset:" << Offset << "\n");
+        while (Offset > 0) {
+          Instr = ContainingFunction->getInstructionAtOffset(Offset);
+          if (Instr) break;
+          --Offset;
+        }
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) " << "offset:" << Offset << "\n");
+        assert (Instr && "can't find previous instruction in containing function");
+        assert (BC->MIB->isCall(*Instr) || "not a call instruction in frametable");
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Callsite at"
+              << "0x" + Twine::utohexstr(FunctionStartAddress+Offset)
+              << "\n");
+        // Add symbol to the callsite and replace the relocation symbol with the
+        // new symbol plus addend which is the size of the call instruction.
+        assert (BC->removeRelocationAt(FrametableAddress+i) ||
+                "remove relocation failed!");
+        uint64_t CallsiteAddress = FunctionStartAddress + Offset;
+        uint64_t CallInstrSize = SymbolAddress - CallsiteAddress;
+
+        MCSymbol *NewSymbol = ContainingFunction->getOrCreateLocalLabel(CallsiteAddress);
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "callinstrsize=" << CallInstrSize
+              << " new label=" << NewSymbol->getName()
+              << "\n");
+        BC->addRelocation(FrametableAddress+i, NewSymbol, Type,
+                          /* Addend */ CallInstrSize,
+                          /* Value */ CallsiteAddress+CallInstrSize);
+      }
+    }
   }
 }
 
@@ -2942,6 +3157,7 @@ void RewriteInstance::emitFunctions() {
   if (!BC->HasRelocations && opts::UpdateDebugSections)
     updateDebugLineInfoForNonSimpleFunctions();
 
+  updateFrametables(/* postopt */ true);;
   emitDataSections(Streamer.get());
 
   // Relocate .eh_frame to .eh_frame_old.
