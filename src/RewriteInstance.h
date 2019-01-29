@@ -155,6 +155,14 @@ public:
 
   void postProcessFunctions();
 
+  /// Update frametables (ocaml native code).
+  /// This function is invoked twice. The bulk of the work to fix up
+  /// the relocations is done at the beginning,
+  /// when instruction offset annotations are still available.
+  /// The second invocation (with postopt argument set) cleans up the frametable
+  /// after dead code and conditional tail call passes (UCE,SCTC).
+  void updateFrametables(bool postopt);
+
   /// Run optimizations that operate at the binary, or post-linker, level.
   void runOptimizationPasses();
 

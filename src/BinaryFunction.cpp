@@ -3993,6 +3993,28 @@ DWARFAddressRangesVector BinaryFunction::translateInputToOutputRanges(
   return MergedRanges;
 }
 
+void BinaryFunction::labelCallsites() {
+  if (CurrentState == State::Disassembled) {
+    for (auto I = Instructions.begin(), E = Instructions.end(); I != E; ++I) {
+      const auto Offset = I->first;
+      auto &Instr = I->second;
+      if (!BC.MIB->isCall(Instr)) continue;
+      auto LabelAddress = getAddress() + Offset;
+      auto *Label = getOrCreateLocalLabel(LabelAddress);
+      DEBUG(dbgs() << "BOLT-DEBUG: (OCAML)"
+            << "label callsite "
+            << "0x" + Twine::utohexstr(LabelAddress)
+            << " with label "
+            << Label->getName()
+            << " in function "
+            << getPrintName()
+            << "\n");
+    }
+  } else {
+    llvm_unreachable("invalid CFG state for labelCallsites()");
+  }
+}
+
 MCInst *BinaryFunction::getInstructionAtOffset(uint64_t Offset) {
   if (CurrentState == State::Disassembled) {
     auto II = Instructions.find(Offset);
