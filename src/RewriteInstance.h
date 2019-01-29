@@ -155,6 +155,8 @@ public:
 
   void postProcessFunctions();
 
+  void printFrametables();
+
   /// Run optimizations that operate at the binary, or post-linker, level.
   void runOptimizationPasses();
 
