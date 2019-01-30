@@ -2631,6 +2631,11 @@ void RewriteInstance::disassembleFunctions() {
     if (Function.getLSDAAddress() != 0)
       Function.parseLSDA(getLSDAData(), getLSDAAddress());
 
+    if (opts::Frametables) {
+      // Add a label for each callsite, before CFG is built
+      Function.labelCallsites();
+    }
+
     if (!Function.buildCFG())
       continue;
 
@@ -2675,6 +2680,7 @@ void RewriteInstance::postProcessFunctions() {
 }
 
 void RewriteInstance::printFrametables()  {
+
   auto DataSection = BC->getUniqueSectionByName(".data");
   assert(DataSection && "missing section .data for ocaml frametables rewrite");
   assert(BC->HasRelocations && "can't do it without relocations");
@@ -2728,6 +2734,7 @@ void RewriteInstance::printFrametables()  {
         uint64_t RelValue = RelP->Value;
         uint64_t RelOffset = RelP->Offset;
         int64_t Addend = RelP->Addend;
+        uint64_t Type = RelP->Type;
         DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
               << "offset: "
               << "0x" + Twine::utohexstr(RelOffset)
@@ -2782,9 +2789,21 @@ void RewriteInstance::printFrametables()  {
               << "Callsite at"
               << "0x" + Twine::utohexstr(FunctionStartAddress+Offset)
               << "\n");
-        // info we need to store here so we can update frame tables after rewrite:
-        // frametablebd, rel, address into frametable,
-        // containing function, offset of call instruction
+        // Add symbol to the callsite and replace the relocation symbol with the
+        // new symbol plus addend which is the size of the call instruction.
+
+        assert (BC->removeRelocationAt(FrametableAddress+i) ||
+                "remove relocation failed!");
+        uint64_t CallsiteAddress = FunctionStartAddress + Offset;
+        uint64_t CallInstrSize = SymbolAddress - CallsiteAddress;
+
+        MCSymbol *NewSymbol = ContainingFunction->getOrCreateLocalLabel(CallsiteAddress);
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "callinstrsize=" << CallInstrSize
+              << " new label=" << NewSymbol->getName()
+              << "\n");
+        BC->addRelocation(FrametableAddress+i, NewSymbol, Type,
+                          /* Addend */ CallInstrSize);
       }
     }
   }
