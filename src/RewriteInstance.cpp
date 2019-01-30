@@ -2775,8 +2775,28 @@ void RewriteInstance::printFrametables()  {
               << "Containing function start address "
               << "0x" + Twine::utohexstr(FunctionStartAddress)
               << "\n");
+        if (FunctionStartAddress == SymbolAddress) {
+          // relocation is referring to the end of the previous function
+          ContainingFunction =
+            getBinaryFunctionContainingAddress(SymbolAddress-1,
+                                               /*CheckPastEnd*/ true,
+                                               /*UseMaxSize*/ false);
+          assert (ContainingFunction && "can't find containing function");
+          DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+                << "SymbolAddress is a start of a function.\n"
+                << "Contianing function is the previous one: "
+                << ContainingFunction->getPrintName()
+                << "\n");
+          FunctionStartAddress = ContainingFunction->getAddress();
+          DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+                << "Containing function start address "
+                << "0x" + Twine::utohexstr(FunctionStartAddress)
+                << "\n");
+        }
+        assert (FunctionStartAddress < SymbolAddress);
         uint64_t Offset = SymbolAddress-FunctionStartAddress-1;
         const MCInst *Instr = nullptr;
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) " << "offset:" << Offset << "\n");
         while (Offset > 0) {
           Instr = ContainingFunction->getInstructionAtOffset(Offset);
           if (Instr) break;
