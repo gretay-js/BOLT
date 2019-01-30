@@ -2685,18 +2685,20 @@ void RewriteInstance::printFrametables()  {
         Name.startswith("caml") ) {
       uint64_t FrametableAddress = BD->getAddress();
       uint64_t FrametableSize = BD->getSize();
-      outs() << "BOLT-INFO: Symbol " << Name << ", "
-         << "0x" + Twine::utohexstr(FrametableAddress) << ":"
-         << "0x" + Twine::utohexstr(FrametableAddress + FrametableSize) << "/"
-         << FrametableSize << "\n";
+      DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+            << "Symbol " << Name << ", "
+            << "0x" + Twine::utohexstr(FrametableAddress) << ":"
+            << "0x" + Twine::utohexstr(FrametableAddress + FrametableSize) << "/"
+            << FrametableSize << "\n");
 
       // This gives us the number of entries in the frame table
       const BinaryData *FrametableBD = BC->getBinaryDataAtAddress(FrametableAddress);
       assert (FrametableBD && "missing binary data for frametable symbol");
       assert (FrametableBD->getSize() == FrametableSize
               && "unexpected size of binary data for frametable");
-      outs() << "Reading frametable at "
-         << "0x" + Twine::utohexstr(FrametableAddress) << "\n";
+      DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) " <<
+            "Reading frametable at "
+            << "0x" + Twine::utohexstr(FrametableAddress) << "\n");
 
       // We could read the frame_desc data structure to know how many
       // bytes to skip to the next rel, in the same way OCaml GC does
@@ -2711,31 +2713,35 @@ void RewriteInstance::printFrametables()  {
         // assumes relocations are 8 byte aligned.
         const Relocation *RelP = BC->getRelocationAt(FrametableAddress+i);
         if (!RelP) continue;
-        outs() << "Found relocation at "
-               << "0x" + Twine::utohexstr(FrametableAddress+i)
-               << "\n";
-        RelP->print(outs());
-        outs() << "\n";
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Found relocation at "
+              << "0x" + Twine::utohexstr(FrametableAddress+i)
+              << ": ");
+        DEBUG(RelP->print(dbgs()));
+        DEBUG(dbgs() << "\n");
 
         auto *RelSymbol = RelP->Symbol;
         assert (RelSymbol && "relocation with null as its symbol");
-        outs() << "Symbol " << RelSymbol->getName() << "\n";
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Symbol " << RelSymbol->getName() << "\n");
 
         uint64_t RelValue = RelP->Value;
         uint64_t RelOffset = RelP->Offset;
         int64_t Addend = RelP->Addend;
-        outs() << "offset: "
-               << "0x" + Twine::utohexstr(RelOffset)
-               << " addend:"
-               << "0x" + Twine::utohexstr(Addend)
-               << " value: "
-               <<  "0x" + Twine::utohexstr(RelValue)
-               << "\n";
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "offset: "
+              << "0x" + Twine::utohexstr(RelOffset)
+              << " addend:"
+              << "0x" + Twine::utohexstr(Addend)
+              << " value: "
+              <<  "0x" + Twine::utohexstr(RelValue)
+              << "\n");
 
         uint64_t SymbolAddress = RelValue;
         auto Section = BC->getSectionForAddress(SymbolAddress);
         if (!Section) {
-          outs () << "Cannot find section\n";
+          DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+                "Cannot find section\n");
           continue;
         }
         const bool IsToCode = Section && Section->isText();
@@ -2747,36 +2753,35 @@ void RewriteInstance::printFrametables()  {
                                              /*CheckPastEnd*/ true,
                                              /*UseMaxSize*/ false);
         assert (ContainingFunction && "can't find containing function");
-        outs() << "Containing function "
-               << ContainingFunction->getPrintName()
-               << "\n";
-        // find the previous instruction (i.e., right before the
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Containing function "
+              << ContainingFunction->getPrintName()
+              << "\n");
+        // Find the previous instruction (i.e., right before the
         // address in the relocation), without making assumptions
         // about the size of that instruction, and then check that
         // the instruction is a call.
         // CR: does it work when the containing function is PIC,
         // in which case its start address is an offset.
         uint64_t FunctionStartAddress = ContainingFunction->getAddress();
-        outs() << "Containing function start address "
-               << "0x" + Twine::utohexstr(FunctionStartAddress)
-               << "\n";
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Containing function start address "
+              << "0x" + Twine::utohexstr(FunctionStartAddress)
+              << "\n");
         uint64_t Offset = SymbolAddress-FunctionStartAddress-1;
-        outs() << "offset:" << Offset << "\n";
         const MCInst *Instr = nullptr;
-        ContainingFunction->print(outs(), "", true);
-
         while (Offset > 0) {
           Instr = ContainingFunction->getInstructionAtOffset(Offset);
           if (Instr) break;
           --Offset;
         }
-        outs() << "offset:" << Offset << "\n";
-        assert (Instr && "Instr not found!!\n");
-        // assert (Instr && "can't find previous instruction in containing function");
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) " << "offset:" << Offset << "\n");
+        assert (Instr && "can't find previous instruction in containing function");
         assert (BC->MIB->isCall(*Instr) || "not a call instruction in frametable");
-        outs() << "Callsite at"
-               << "0x" + Twine::utohexstr(FunctionStartAddress+Offset)
-               << "\n";
+        DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+              << "Callsite at"
+              << "0x" + Twine::utohexstr(FunctionStartAddress+Offset)
+              << "\n");
         // info we need to store here so we can update frame tables after rewrite:
         // frametablebd, rel, address into frametable,
         // containing function, offset of call instruction
