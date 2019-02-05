@@ -1,4 +1,4 @@
-Ocaml binaries would need to be built with a this version of ocaml: 
+Ocaml binaries would need to be built with a this version of ocaml compiler: 
 https://github.com/gretay-js/ocaml/tree/try-with
 
 
