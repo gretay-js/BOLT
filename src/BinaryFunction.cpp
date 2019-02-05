@@ -4006,6 +4006,8 @@ void BinaryFunction::labelCallsites() {
             << "0x" + Twine::utohexstr(LabelAddress)
             << " with label "
             << Label->getName()
+            << " in function "
+            << getPrintName()
             << "\n");
     }
   } else {
