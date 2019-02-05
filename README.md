@@ -1,3 +1,7 @@
+Ocaml binaries would need to be built with a this version of ocaml: 
+https://github.com/gretay-js/ocaml/tree/try-with
+
+
 # BOLT
 
 BOLT is a post-link optimizer developed to speed up large applications.
