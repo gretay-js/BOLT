@@ -1016,13 +1016,7 @@ void RewriteInstance::run() {
     processProfileData();
     if (opts::AggregateOnly)
       return;
-
-    if (opts::Frametables) {
-      outs() << "BOLT-INFO: Frametables:\n";
-      printFrametables();
-      outs() << "BOLT-INFO: Frametables END\n";
-    }
-
+    updateFrametables(/* postopt */ false);
     postProcessFunctions();
     for (uint64_t Address : NonSimpleFunctions) {
       auto FI = BinaryFunctions.find(Address);
@@ -2679,8 +2673,9 @@ void RewriteInstance::postProcessFunctions() {
   }
 }
 
-void RewriteInstance::printFrametables()  {
-
+void RewriteInstance::updateFrametables(bool postopt)  {
+  if (!opts::Frametables) return;
+  outs() << "BOLT-INFO: Updating frametables\n";
   auto DataSection = BC->getUniqueSectionByName(".data");
   assert(DataSection && "missing section .data for ocaml frametables rewrite");
   assert(BC->HasRelocations && "can't do it without relocations");
@@ -2764,6 +2759,40 @@ void RewriteInstance::printFrametables()  {
               << "Containing function "
               << ContainingFunction->getPrintName()
               << "\n");
+
+        if (postopt) {
+        // This is a hack to fix a reference to a label that was removed.
+        // If the call site was removed as a result of dead code elimination
+        // or other optimizations, we cannot reference the label of that callsite.
+        // Ideally, we would remove this entry from the frametable,
+        // but it would require us to use the precise structure of
+        // frame_desc entries of the frametable.
+        // Instead, we leave the entry as is, but attach a label that points to
+        // an address that is guaranteed not to be a return of a call (in the new code),
+        // and therefore the GC will never need to look it up.
+        // We choose to set the label to the frame table itself.
+        // CR: this might later interfere with other pointers from frametable
+        // to data section which are designated for dwarf debug info.
+          if (!(RelSymbol->isTemporary() && RelSymbol->isUndefined()))
+            continue;
+          uint64_t newSymbolAddress =
+            ContainingFunction->translateInputToOutputAddress(SymbolAddress);
+          outs () << "Removing relocation at "
+                  << "0x" + Twine::utohexstr(FrametableAddress+i)
+                  << " in function "
+                  << "0x" + Twine::utohexstr(ContainingFunction->getAddress())
+                  << " symbol " << RelSymbol->getName()
+                  << "at 0x" + Twine::utohexstr(SymbolAddress)
+                  << " addend:" + Twine::utohexstr(Addend)
+                  << " new address: 0x" + Twine::utohexstr(newSymbolAddress)
+                  << "\n";
+          assert (BC->removeRelocationAt(FrametableAddress+i) ||
+                  "remove relocation failed!");
+          MCSymbol *NewSymbol = BC->getOrCreateGlobalSymbol(FrametableAddress, Name);
+          BC->addRelocation(FrametableAddress+i, NewSymbol, Type);
+          continue;
+        }
+
         // Find the previous instruction (i.e., right before the
         // address in the relocation), without making assumptions
         // about the size of that instruction, and then check that
@@ -2823,12 +2852,12 @@ void RewriteInstance::printFrametables()  {
               << " new label=" << NewSymbol->getName()
               << "\n");
         BC->addRelocation(FrametableAddress+i, NewSymbol, Type,
-                          /* Addend */ CallInstrSize);
+                          /* Addend */ CallInstrSize,
+                          /* Value */ CallsiteAddress+CallInstrSize);
       }
     }
   }
 }
-
 
 void RewriteInstance::runOptimizationPasses() {
   NamedRegionTimer T("runOptimizationPasses", "run optimization passes",
@@ -3115,6 +3144,7 @@ void RewriteInstance::emitFunctions() {
   if (!BC->HasRelocations && opts::UpdateDebugSections)
     updateDebugLineInfoForNonSimpleFunctions();
 
+  updateFrametables(/* postopt */ true);;
   emitDataSections(Streamer.get());
 
   // Relocate .eh_frame to .eh_frame_old.
