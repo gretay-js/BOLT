@@ -2773,18 +2773,23 @@ void RewriteInstance::updateFrametables(bool postopt)  {
         // We choose to set the label to the frame table itself.
         // CR: this might later interfere with other pointers from frametable
         // to data section which are designated for dwarf debug info.
-          if (ContainingFunction->translateInputToOutputAddress(SymbolAddress)==0) {
-            assert (RelSymbol->isTemporary() || "expected temporary symbol");
-            assert (RelSymbol->isUndefined() || "expected this symbol to be undefined");
-            MCSymbol *NewSymbol = BC->getOrCreateGlobalSymbol(FrametableAddress, "FRAMETAB");
-            DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
-                  << "callinstrsize=" << FrametableAddress
-                  << " new label=" << NewSymbol->getName()
-                  << "\n");
-            assert (BC->removeRelocationAt(FrametableAddress+i) ||
-                    "remove relocation failed!");
-            BC->addRelocation(FrametableAddress+i, NewSymbol, Type);
-          }
+          if (!(RelSymbol->isTemporary() && RelSymbol->isUndefined()))
+            continue;
+          uint64_t newSymbolAddress =
+            ContainingFunction->translateInputToOutputAddress(SymbolAddress);
+          outs () << "Removing relocation at "
+                  << "0x" + Twine::utohexstr(FrametableAddress+i)
+                  << " in function "
+                  << "0x" + Twine::utohexstr(ContainingFunction->getAddress())
+                  << " symbol " << RelSymbol->getName()
+                  << "at 0x" + Twine::utohexstr(SymbolAddress)
+                  << " addend:" + Twine::utohexstr(Addend)
+                  << " new address: 0x" + Twine::utohexstr(newSymbolAddress)
+                  << "\n";
+          assert (BC->removeRelocationAt(FrametableAddress+i) ||
+                  "remove relocation failed!");
+          MCSymbol *NewSymbol = BC->getOrCreateGlobalSymbol(FrametableAddress, Name);
+          BC->addRelocation(FrametableAddress+i, NewSymbol, Type);
           continue;
         }
 
