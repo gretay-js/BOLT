@@ -2674,14 +2674,27 @@ void RewriteInstance::postProcessFunctions() {
 }
 
 void RewriteInstance::updateFrametables(bool postopt)  {
+  // Frametables contain relocations that point to labels in the code
+  // section.  These labels are intended to mark the return address of
+  // a call instructions, They are used by Ocaml GC. However, BOLT's
+  // block reordering can move the labeled instruction, along with the
+  // label. This is incorrect and can cause the execution of the
+  // BOLTed file to crash during GC.  We fix it by modifying these
+  // relocations. We add a label for every call instruction in the
+  // program. This has to be done earlier, before CFG construction,
+  // and is only done when frametables option is enabled.  Then, we
+  // make the relocation point to this label with an addend that
+  // equals to the size of the call instruction.
   if (!opts::Frametables) return;
   outs() << "BOLT-INFO: Updating frametables\n";
+  // look for frametables in data section
   auto DataSection = BC->getUniqueSectionByName(".data");
   assert(DataSection && "missing section .data for ocaml frametables rewrite");
-  assert(BC->HasRelocations && "can't do it without relocations");
+  assert(BC->HasRelocations && "can't hanlde frametables without relocations");
   for (auto &Entry : BC->getBinaryDataForSection(*DataSection)) {
     const auto *BD = Entry.second;
     StringRef Name = BD->getName();
+    // frametables start with a label whose format is fixed by ocaml compiler.
     if (Name.endswith("_frametable") &&
         Name.startswith("caml") ) {
       uint64_t FrametableAddress = BD->getAddress();
@@ -2750,6 +2763,7 @@ void RewriteInstance::updateFrametables(bool postopt)  {
         if (!IsToCode)
           continue;
 
+        // Find the function that contains the address of the relocation label.
         auto *ContainingFunction =
           getBinaryFunctionContainingAddress(SymbolAddress,
                                              /*CheckPastEnd*/ true,
@@ -2761,7 +2775,8 @@ void RewriteInstance::updateFrametables(bool postopt)  {
               << "\n");
 
         if (postopt) {
-        // This is a hack to fix a reference to a label that was removed.
+        // This is a hack to fix a reference to a label that was removed
+        // by (UCE) and conditional.
         // If the call site was removed as a result of dead code elimination
         // or other optimizations, we cannot reference the label of that callsite.
         // Ideally, we would remove this entry from the frametable,
@@ -2771,8 +2786,10 @@ void RewriteInstance::updateFrametables(bool postopt)  {
         // an address that is guaranteed not to be a return of a call (in the new code),
         // and therefore the GC will never need to look it up.
         // We choose to set the label to the frame table itself.
-        // CR: this might later interfere with other pointers from frametable
-        // to data section which are designated for dwarf debug info.
+        //
+        // This "postopt" pass can be done faster if we store
+        // some info about frametables that we collected in the first pass,
+        // but it can get very large.
           if (!(RelSymbol->isTemporary() && RelSymbol->isUndefined()))
             continue;
           uint64_t newSymbolAddress =
@@ -2840,7 +2857,6 @@ void RewriteInstance::updateFrametables(bool postopt)  {
               << "\n");
         // Add symbol to the callsite and replace the relocation symbol with the
         // new symbol plus addend which is the size of the call instruction.
-
         assert (BC->removeRelocationAt(FrametableAddress+i) ||
                 "remove relocation failed!");
         uint64_t CallsiteAddress = FunctionStartAddress + Offset;
