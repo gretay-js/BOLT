@@ -323,23 +323,43 @@ void ReorderFunctions::runOnFunctions(BinaryContext &BC,
                      });
       std::stable_sort(SortedFunctions.begin(), SortedFunctions.end(),
                        [&](const BinaryFunction *A, const BinaryFunction *B) {
-                         if (!opts::shouldProcess(*A))
-                           return false;
-                         const auto PadA = opts::padFunction(*A);
-                         const auto PadB = opts::padFunction(*B);
-                         if (!PadA || !PadB) {
-                           if (PadA)
+                         if (opts::shouldProcess(*A) && opts::shouldProcess(*B)) {
+                           const auto PadA = opts::padFunction(*A);
+                           const auto PadB = opts::padFunction(*B);
+                           if (PadA && !PadB) {
                              return true;
-                           if (PadB)
+                           }
+                           else if (!PadA && PadB) {
                              return false;
+                           }
+                           else {
+                             if (A->hasProfile() && B->hasProfile()) {
+                               return A->getExecutionCount() > B->getExecutionCount();
+                             } else if (A->hasProfile()) {
+                               return true;
+                             } else if (B->hasProfile()) {
+                               return false;
+                             }
+                           }
+                         } else if (opts::shouldProcess(*A)) {
+                           return true;
+                         } else if (opts::shouldProcess(*B)) {
+                           return false;
                          }
-                         return !A->hasProfile() &&
-                           (B->hasProfile() ||
-                            (A->getExecutionCount() > B->getExecutionCount()));
+                         return A->getAddress() < B->getAddress();
                        });
       for (auto *BF : SortedFunctions) {
-        if (BF->hasProfile())
+        if (BF->hasProfile()) {
+          if (opts::Verbosity > 1) {
+            if (Index == 0)
+              outs() << "BOLT-INFO: Top execution counts\n";
+            outs() << Index
+                   << ":\t" << BF->getExecutionCount()
+                   << ":\t" << BF->getPrintName()
+                   << "\n";
+          }
           BF->setIndex(Index++);
+        }
       }
     }
     break;
