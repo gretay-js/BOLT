@@ -16,6 +16,9 @@
 #include "ReorderUtils.h"
 #include "llvm/Support/Options.h"
 
+#undef  DEBUG_TYPE
+#define DEBUG_TYPE "cacheplus"
+
 using namespace llvm;
 using namespace bolt;
 using EdgeList = std::vector<std::pair<BinaryBasicBlock *, uint64_t>>;
@@ -23,6 +26,7 @@ using EdgeList = std::vector<std::pair<BinaryBasicBlock *, uint64_t>>;
 namespace opts {
 
 extern cl::OptionCategory BoltOptCategory;
+extern cl::opt<unsigned> Verbosity;
 
 cl::opt<unsigned>
 ClusterSplitThreshold("cluster-split-threshold",
@@ -31,6 +35,19 @@ ClusterSplitThreshold("cluster-split-threshold",
   cl::ZeroOrMore,
   cl::cat(BoltOptCategory));
 
+cl::opt<unsigned>
+CachePlusMaxFuncSize("cacheplus-max-func-size",
+  cl::desc("The maximum size of a function in bytes to apply reordering"),
+  cl::init(0), // 0 means unlimited
+  cl::ZeroOrMore,
+  cl::cat(BoltOptCategory));
+
+static cl::opt<bool>
+SkipReorderEntryFunctions("skip-reorder-ocaml-entry-funcs",
+  cl::desc("skip cache plus reorder of toplevel ocaml entry functions"),
+  cl::ZeroOrMore,
+  cl::Hidden,
+  cl::cat(BoltOptCategory));
 }
 
 namespace llvm {
@@ -684,8 +701,45 @@ void CachePlusReorderAlgorithm::reorderBasicBlocks(
       NumHotBlocks++;
   }
 
+  bool change = true;
   // Do not change layout of functions w/o profile information
   if (NumHotBlocks == 0 || BF.layout_size() <= 1) {
+    if (opts::Verbosity > 2) {
+      outs() << "BOLT-INFO: Cache+ skipping func "
+             << BF.getPrintName()
+             << " size=" << BF.size()
+             << " hotblocks=" << NumHotBlocks << "\n";
+    }
+    change = false;
+  }
+
+  DEBUG(dbgs() << "BOLT-DEBUG: CachePlusReorder "
+        << " BF.getSize= " << BF.getSize()
+        << " opts::CachePlusMaxFuncSize= " << opts::CachePlusMaxFuncSize
+        << " " << BF.getPrintName()
+        << "\n");
+
+  // Skip entry functions
+  if (opts::SkipReorderEntryFunctions) {
+    StringRef name = BF.getPrintName();
+    if (name.endswith("__entry")) {
+      if (opts::Verbosity > 2) {
+        outs() << "BOLT-INFO: Cache+ skipping entry " << BF.getPrintName() << "\n";
+      }
+      change = false;
+    }
+  }
+
+  if ((opts::CachePlusMaxFuncSize != 0)
+      && (opts::CachePlusMaxFuncSize > BF.getSize())) {
+    if (opts::Verbosity > 2) {
+      outs() << "BOLT-INFO: Cache+ skipping large func "
+             << BF.getPrintName() << " size=" << BF.size() << "\n";
+    }
+    change = false;
+  }
+
+  if (!change) {
     for (auto BB : BF.layout()) {
       Order.push_back(BB);
     }

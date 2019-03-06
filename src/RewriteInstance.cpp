@@ -304,6 +304,13 @@ SkipFunctionNamesFile("skip-funcs-file",
   cl::Hidden,
   cl::cat(BoltCategory));
 
+static cl::opt<bool>
+SkipAllEntryFunctions("skip-all-ocaml-entry-funcs",
+  cl::desc("skip all toplevel ocaml entry functions"),
+  cl::ZeroOrMore,
+  cl::Hidden,
+  cl::cat(BoltCategory));
+
 cl::opt<BinaryFunction::SplittingType>
 SplitFunctions("split-functions",
   cl::desc("split functions into hot and cold regions"),
@@ -418,6 +425,15 @@ bool shouldProcess(const BinaryFunction &Function) {
     populateFunctionNames(SkipFunctionNamesFile, SkipFunctionNames);
 
   bool IsValid = true;
+  // Skip entry functions
+  if (opts::SkipAllEntryFunctions) {
+    StringRef name = Function.getPrintName();
+    if (name.endswith("__entry")) {
+      DEBUG(dbgs ()<< "BOLT-DEBUG: (OCAML) Skipping " << Function.getPrintName() << "\n");
+      return false;
+    }
+  }
+
   if (!FunctionNames.empty()) {
     IsValid = false;
     for (auto &Name : FunctionNames) {
@@ -433,6 +449,8 @@ bool shouldProcess(const BinaryFunction &Function) {
   if (!SkipFunctionNames.empty()) {
     for (auto &Name : SkipFunctionNames) {
       if (Function.hasName(Name)) {
+        DEBUG(dbgs() << "BOLT-DEBUG: Skipping "
+              << Name << ":" << Function.getPrintName() << "\n");
         IsValid = false;
         break;
       }
