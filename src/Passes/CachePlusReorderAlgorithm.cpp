@@ -734,7 +734,7 @@ void CachePlusReorderAlgorithm::reorderBasicBlocks(
       && (opts::CachePlusMaxFuncSize > BF.getSize())) {
     if (opts::Verbosity > 2) {
       outs() << "BOLT-INFO: Cache+ skipping large func "
-             << BF.getPrintName() << " size=" << BF.size() << "\n";
+             << BF.getPrintName() << " size=" << BF.getSize() << "\n";
     }
     change = false;
   }
@@ -754,11 +754,12 @@ void CachePlusReorderAlgorithm::reorderBasicBlocks(
   assert(Order.size() == BF.layout_size() && "Wrong size of reordered layout");
 
   if (opts::Verbosity > 2) {
-    outs() << "BOLT-INFO: Cache+ old layout" << BF.getPrintName() << "\n";
+    outs() << "BOLT-INFO: Cache+ old layout " << BF.getPrintName()
+           << " at " << BF.getAddress() << "\n";
     for (auto BB : BF.layout()) {
-      outs() << BB->getName() << "\n";
+      outs() << BB->getName() << ":" << BB->getInputOffset() << "\n";
     }
-    outs() << "BOLT-INFO: Cache+ new layout" << BF.getPrintName() << "\n";
+    outs() << "BOLT-INFO: Cache+ new layout " << BF.getPrintName() << "\n";
     for (auto BB : Order) {
       outs() << BB->getName() << "\n";
     }
