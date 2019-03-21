@@ -34,6 +34,12 @@ BucketsPerLine("line-size",
   cl::Optional,
   cl::sub(HeatmapCommand));
 
+static cl::opt<unsigned>
+MaxSamples("max-samples-heatmap-legend",
+  cl::desc("to compare heatmaps use the same legend with max-samples"),
+  cl::init(0),
+  cl::Optional,
+  cl::sub(HeatmapCommand));
 }
 
 namespace llvm {
@@ -86,8 +92,25 @@ void Heatmap::print(raw_ostream &OS) const {
 
   // Calculate the max value for scaling.
   uint64_t MaxValue = 0;
+  uint64_t TotalSamples = 0;
   for (auto &Entry : Map) {
     MaxValue = std::max<uint64_t>(MaxValue, Entry.second);
+    TotalSamples += Entry.second;
+  }
+  if (opts::MaxSamples > 0) {
+    if (MaxValue > opts::MaxSamples) {
+      errs() << "Max samples found is " << MaxValue
+             << ". Must be smaller than -max-samples-heatmap-legend "
+             << opts::MaxSamples << "\n";
+      exit(1);
+    }
+    else if (MaxValue < opts::MaxSamples) {
+      outs() << "BOLT-INFO: Max samples found is " << MaxValue
+             << " smaller than -max-samples-heatmap-legend "
+             << opts::MaxSamples
+             << ". Legend adjusted to use the command line argument.\n";
+      MaxValue = opts::MaxSamples;
+    }
   }
 
   // Print start of the line and fill it with an empty space right before
@@ -194,6 +217,8 @@ void Heatmap::print(raw_ostream &OS) const {
     OS << " : (" << PrevValue << ", " << Value << "]\n";
     PrevValue = Value;
   }
+
+  OS << "Total number of samples: " << TotalSamples << "\n";
 
   // Pos - character position from right in hex form.
   auto printHeader = [&](unsigned Pos) {
