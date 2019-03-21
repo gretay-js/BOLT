@@ -361,6 +361,7 @@ void ReorderBasicBlocks::runOnFunctions(
       auto &Function = Rit->second;
 
       OS << "           Information for function of top: " << (I + 1) << ": \n";
+      OS << "             " << Function.getPrintName() << "\n";
       OS << "             Function Score is: " << Function.getFunctionScore()
          << "\n";
       OS << "             There are " << Function.size()
