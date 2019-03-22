@@ -416,6 +416,11 @@ private:
     return BB && BB->getOffset() == Offset ? BB : nullptr;
   }
 
+  /// Print block reordering as a graph
+  void dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout) const;
+  void dumpMappingText(const BasicBlockOrderType &NewLayout) const;
+  void dumpMappingGraph(const BasicBlockOrderType &NewLayout) const;
+
   /// Release memory taken by the list.
   template<typename T> BinaryFunction &clearList(T& List) {
     T TempList;
@@ -827,6 +832,7 @@ public:
     BasicBlocksPreviousLayout = BasicBlocksLayout;
 
     if (NewLayout != BasicBlocksLayout) {
+      dumpBasicBlockReorder(NewLayout);
       ModifiedLayout = true;
       BasicBlocksLayout.clear();
       BasicBlocksLayout.swap(NewLayout);

@@ -165,7 +165,7 @@ PrintPeepholes("print-peepholes",
   cl::Hidden,
   cl::cat(BoltOptCategory));
 
-static cl::opt<bool>
+cl::opt<bool>
 PrintReordered("print-reordered",
   cl::desc("print functions after layout optimization"),
   cl::ZeroOrMore,

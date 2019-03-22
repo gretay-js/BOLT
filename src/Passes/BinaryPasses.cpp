@@ -262,7 +262,7 @@ void EliminateUnreachableBlocks::runOnFunction(BinaryFunction& Function) {
     unsigned Count;
     uint64_t Bytes;
     Function.markUnreachableBlocks();
-    DEBUG({
+    if (opts::Verbosity > 2) {
       for (auto *BB : Function.layout()) {
         if (!BB->isValid()) {
           dbgs() << "BOLT-INFO: UCE found unreachable block " << BB->getName()
@@ -270,7 +270,7 @@ void EliminateUnreachableBlocks::runOnFunction(BinaryFunction& Function) {
           BB->dump();
         }
       }
-    });
+    }
     std::tie(Count, Bytes) = Function.eraseInvalidBBs();
     DeletedBlocks += Count;
     DeletedBytes += Bytes;

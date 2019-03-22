@@ -55,6 +55,8 @@ extern bool shouldProcess(const BinaryFunction &);
 extern cl::opt<bool> UpdateDebugSections;
 extern cl::opt<unsigned> Verbosity;
 
+extern cl::opt<bool> PrintReordered;
+
 cl::opt<bool>
 AlignBlocks("align-blocks",
   cl::desc("align basic blocks"),
@@ -3140,6 +3142,125 @@ void BinaryFunction::dumpGraphToFile(std::string Filename) const {
     return;
   }
   dumpGraph(of);
+}
+
+void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout) const {
+
+  // create bipartite graph mapping block to its sequential
+  // index in the old layout. We use it to relate new order back to old.
+
+  std::unordered_map<BinaryBasicBlock *, int> MapBB, MapBBnew;
+
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
+    MapBB.emplace(BasicBlocksLayout[i], i);
+    MapBBnew.emplace(NewLayout[i],i);
+  }
+
+  // Print side by side new and old layout sequences
+  dbgs() << "BOLT-INFO: Basic block reorder " << getPrintName()
+         << " at 0x" << Twine::utohexstr(getAddress()) << "\n";
+  assert (BasicBlocksLayout.size() == NewLayout.size());
+  for (auto i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BBold = BasicBlocksLayout[i];
+    auto *BBnew = NewLayout[i];
+    auto j = MapBB.find(BBnew);
+    auto pos = (j == MapBB.end()? -1 : j->second);
+    dbgs() << BBold->getName() << ":" << Twine::utohexstr(BBold->getInputOffset())
+           << i << "\t\t" << pos
+           << BBnew->getName() << ":" << Twine::utohexstr(BBnew->getInputOffset())
+           << "\n";
+  }
+
+}
+
+void BinaryFunction::dumpMappingGraph(const BasicBlockOrderType &NewLayout) const {
+
+  // create bipartite graph mapping block to its sequential
+  // index in the old layout. We use it to relate new order back to old.
+
+  std::unordered_map<BinaryBasicBlock *, int> MapBB, MapBBnew;
+
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
+    MapBB.emplace(BasicBlocksLayout[i], i);
+    MapBBnew.emplace(NewLayout[i],i);
+  }
+
+  // print bipartite graph of reordering mapping to file in dot format
+  // open the file
+  std::string Annotation = "block-reorder-map";
+  auto Filename = constructFilename(getPrintName(), Annotation, ".dot");
+  dbgs() << "BOLT-DEBUG: Dumping block reorder to " << Filename << "\n";
+  std::error_code EC;
+  raw_fd_ostream OS(Filename, EC, sys::fs::F_None);
+  if (EC) {
+    if (opts::Verbosity >= 1) {
+      errs() << "BOLT-WARNING: " << EC.message() << ", unable to open "
+             << Filename << " for output.\n";
+    }
+  }
+
+  // print dot format
+  OS << "strict digraph \"" << getPrintName() << "\" {\n";
+  uint64_t Offset = Address;
+  // nodes
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BB = BasicBlocksLayout[i];
+    // add old node
+    const char* ColdStr = BB->isCold() ? " (cold)" : "";
+    OS << format("\"%s\" [label=\"%s%s\\n(C:%lu,O:%lu,I:%u,L:%u:CFI:%u)\"]\n",
+                 BB->getName().data(),
+                 BB->getName().data(),
+                 ColdStr,
+                 (BB->ExecutionCount != BinaryBasicBlock::COUNT_NO_PROFILE
+                  ? BB->ExecutionCount
+                  : 0),
+                 BB->getOffset(),
+                 getIndex(BB),
+                 i,
+                 BB->getCFIState());
+    OS << format("\"%s\" [shape=box]\n", BB->getName().data());
+    if (opts::DotToolTipCode) {
+      std::string Str;
+      raw_string_ostream CS(Str);
+      Offset = BC.printInstructions(CS, BB->begin(), BB->end(), Offset, this);
+      const auto Code = formatEscapes(CS.str());
+      OS << format("\"%s\" [tooltip=\"%s\"]\n",
+                   BB->getName().data(),
+                   Code.c_str());
+    }
+    // add new node
+    auto j = MapBBnew.find(BB);
+    auto pos = (j == MapBBnew.end()? -1 : j->second);
+    OS << format("\"new%s\" [label=\"%s:%u\"]\n",
+                 BB->getName().data(),
+                 BB->getName().data(),
+                 pos);
+  }
+  // edges
+  for (auto i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BB = BasicBlocksLayout[i];
+    OS << format("\"%s\" -> \"new%s\"\n",
+                 BB->getName().data(),
+                 BB->getName().data());
+  }
+
+  OS << "}\n";
+
+  // visualize
+  if (DisplayGraph(Filename)) {
+    errs() << "BOLT-ERROR: Can't display " << Filename << " with graphviz.\n";
+  }
+}
+
+void BinaryFunction::dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout) const {
+
+  if (opts::PrintReordered) {
+    dumpGraphForPass("block-reorder");
+
+    dumpMappingText(NewLayout);
+
+    //  DEBUG(dumpMappingGraph(NewLayout));
+  }
 }
 
 bool BinaryFunction::validateCFG() const {
