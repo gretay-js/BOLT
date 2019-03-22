@@ -731,7 +731,7 @@ void CachePlusReorderAlgorithm::reorderBasicBlocks(
   }
 
   if ((opts::CachePlusMaxFuncSize != 0)
-      && (opts::CachePlusMaxFuncSize > BF.getSize())) {
+      && (opts::CachePlusMaxFuncSize < BF.getSize())) {
     if (opts::Verbosity > 2) {
       outs() << "BOLT-INFO: Cache+ skipping large func "
              << BF.getPrintName() << " size=" << BF.getSize() << "\n";
