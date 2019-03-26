@@ -3071,17 +3071,17 @@ void BinaryFunction::dumpGraph(raw_ostream& OS) const {
         if (Succ == BB->getConditionalSuccessor(true)) {
           Branch = CondBranch
             ? BC.InstPrinter->getOpcodeName(CondBranch->getOpcode())
-            : "TB";
+            : "TB"; // True Branch
         } else if (Succ == BB->getConditionalSuccessor(false)) {
           Branch = UncondBranch
             ? BC.InstPrinter->getOpcodeName(UncondBranch->getOpcode())
-            : "FB";
+            : "FB"; // False Branch
         } else {
-          Branch = "FT";
+          Branch = "FT"; // FallThrough
         }
       }
       if (IsJumpTable) {
-        Branch = "JT";
+        Branch = "JT"; // Jump Table
       }
       OS << format("\"%s\" -> \"%s\" [label=\"%s",
                    BB->getName().data(),
@@ -3158,19 +3158,22 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout) const
 
   // Print side by side new and old layout sequences
   dbgs() << "BOLT-INFO: Basic block reorder " << getPrintName()
-         << " at 0x" << Twine::utohexstr(getAddress()) << "\n";
+         << " at 0x" << Twine::utohexstr(getAddress())
+         << " size 0x" << Twine::utohexstr(getSize()) << "\n";
   assert (BasicBlocksLayout.size() == NewLayout.size());
   for (auto i = 0; i < BasicBlocksLayout.size(); i++) {
     auto *BBold = BasicBlocksLayout[i];
     auto *BBnew = NewLayout[i];
     auto j = MapBB.find(BBnew);
     auto pos = (j == MapBB.end()? -1 : j->second);
-    dbgs() << BBold->getName() << ":" << Twine::utohexstr(BBold->getInputOffset())
-           << i << "\t\t" << pos
-           << BBnew->getName() << ":" << Twine::utohexstr(BBnew->getInputOffset())
+    dbgs() << i << "\t" << pos << "\t"
+           << i << ":" << BBold->getName()
+           << ":0x" << Twine::utohexstr(BBold->getInputOffset())
+           << "\t"
+           << pos << ":" BBnew->getName()
+           << ":0x" << Twine::utohexstr(BBnew->getInputOffset())
            << "\n";
   }
-
 }
 
 void BinaryFunction::dumpMappingGraph(const BasicBlockOrderType &NewLayout) const {
@@ -3259,7 +3262,7 @@ void BinaryFunction::dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout)
 
     dumpMappingText(NewLayout);
 
-    //  DEBUG(dumpMappingGraph(NewLayout));
+    dumpMappingGraph(NewLayout);
   }
 }
 

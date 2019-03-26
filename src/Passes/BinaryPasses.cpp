@@ -265,7 +265,9 @@ void EliminateUnreachableBlocks::runOnFunction(BinaryFunction& Function) {
     if (opts::Verbosity > 2) {
       for (auto *BB : Function.layout()) {
         if (!BB->isValid()) {
-          dbgs() << "BOLT-INFO: UCE found unreachable block " << BB->getName()
+          dbgs() << "BOLT-INFO: UCE found unreachable block "
+                 << BB->getName()
+                 << "at" << BB->getInputOffset()
                  << " in function " << Function << "\n";
           BB->dump();
         }
