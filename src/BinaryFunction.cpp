@@ -3169,8 +3169,9 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout) const
     dbgs() << i << "\t" << pos << "\t"
            << i << ":" << BBold->getName()
            << ":0x" << Twine::utohexstr(BBold->getInputOffset())
+           << ":0x" <<  Twine::utohexstr(getAddress()+BBold->getInputOffset())
            << "\t"
-           << pos << ":" BBnew->getName()
+           << pos << ":" << BBnew->getName()
            << ":0x" << Twine::utohexstr(BBnew->getInputOffset())
            << "\n";
   }
@@ -3180,7 +3181,6 @@ void BinaryFunction::dumpMappingGraph(const BasicBlockOrderType &NewLayout) cons
 
   // create bipartite graph mapping block to its sequential
   // index in the old layout. We use it to relate new order back to old.
-
   std::unordered_map<BinaryBasicBlock *, int> MapBB, MapBBnew;
 
   for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
@@ -3203,14 +3203,15 @@ void BinaryFunction::dumpMappingGraph(const BasicBlockOrderType &NewLayout) cons
   }
 
   // print dot format
-  OS << "strict digraph \"" << getPrintName() << "\" {\n";
+  OS << "digraph \"" << getPrintName() << "\" {\n";
+  OS << "rankdir=LR;\n";
   uint64_t Offset = Address;
   // nodes
   for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
     auto *BB = BasicBlocksLayout[i];
     // add old node
     const char* ColdStr = BB->isCold() ? " (cold)" : "";
-    OS << format("\"%s\" [label=\"%s%s\\n(C:%lu,O:%lu,I:%u,L:%u:CFI:%u)\"]\n",
+    OS << format("\"%s\" [label=\"%s%s\\n(C:%lu,O:%lu,I:%u,CFI:%u)\"]\n",
                  BB->getName().data(),
                  BB->getName().data(),
                  ColdStr,
@@ -3219,7 +3220,6 @@ void BinaryFunction::dumpMappingGraph(const BasicBlockOrderType &NewLayout) cons
                   : 0),
                  BB->getOffset(),
                  getIndex(BB),
-                 i,
                  BB->getCFIState());
     OS << format("\"%s\" [shape=box]\n", BB->getName().data());
     if (opts::DotToolTipCode) {
@@ -3234,25 +3234,81 @@ void BinaryFunction::dumpMappingGraph(const BasicBlockOrderType &NewLayout) cons
     // add new node
     auto j = MapBBnew.find(BB);
     auto pos = (j == MapBBnew.end()? -1 : j->second);
-    OS << format("\"new%s\" [label=\"%s:%u\"]\n",
+    ColdStr = BB->isCold() ? " (cold)" : "";
+    OS << format("\"new%s\" [label=\"%s%s:%u\\n(C:%lu,O:%lu,I:%u,CFI:%u)\"]\n",
                  BB->getName().data(),
                  BB->getName().data(),
-                 pos);
+                 ColdStr,
+                 i,
+                 (BB->ExecutionCount != BinaryBasicBlock::COUNT_NO_PROFILE
+                  ? BB->ExecutionCount
+                  : 0),
+                 BB->getOffset(),
+                 pos,
+                 BB->getCFIState()
+                 );
+    OS << format("\"new%s\" [shape=box]\n", BB->getName().data());
   }
   // edges
-  for (auto i = 0; i < BasicBlocksLayout.size(); i++) {
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
     auto *BB = BasicBlocksLayout[i];
     OS << format("\"%s\" -> \"new%s\"\n",
                  BB->getName().data(),
                  BB->getName().data());
   }
 
-  OS << "}\n";
-
-  // visualize
-  if (DisplayGraph(Filename)) {
-    errs() << "BOLT-ERROR: Can't display " << Filename << " with graphviz.\n";
+  // for layout, set "rank" in dot to "same" for all nodes
+  // in the original binary layout
+  OS << "{rank=same; ";
+    // loop to print this "a; b; c; "
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BB = BasicBlocksLayout[i];
+    OS << format("\"%s\"; ", BB->getName().data());
   }
+  OS << "};\n";
+
+  // for layout, set "rank" in dot to "same" for all nodes
+  // in the new binary layout
+  OS << "{rank=same; ";
+    // loop to print this "a; b; c; "
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BB = BasicBlocksLayout[i];
+    OS << format("\"new%s\"; ", BB->getName().data());
+  }
+  OS << "};\n";
+  // Edges to show sequence of blocks in a layout, it's needed for dot layout
+  // but may be also useful for visualization to quickly identify problems
+  // in the dot layout itself or the order produce by optimizer.
+  // These edges may need to be removed if we add CFG edges on top of this graph.
+  // Original binary layout:
+  OS << "edge[color=blue,style=dotted,arrowhead=none];\n";
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BB = BasicBlocksLayout[i];
+    OS << format("%s\"%s\"\n",
+                 ((i == 0) ? "" : "->"),
+                 BB->getName().data());
+  }
+  OS << ";\n";
+  // New binary layout:
+  for (size_t  i = 0; i < NewLayout.size(); i++) {
+    auto *BB = NewLayout[i];
+    OS << format("%s\"new%s\"\n",
+                 ((i == 0) ? "" : "->"),
+                 BB->getName().data());
+  }
+  OS << ";\n";
+  // edges connecting each position [i] in [before] and [after] sequence
+  // are invisible but needed for dot layout
+  OS << "edge[style=invis];" << "\n";
+  for (size_t i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BB = BasicBlocksLayout[i];
+    auto *BBnew = NewLayout[i];
+    OS << format("\"%s\" -> \"new%s\";\n",
+                 BB->getName().data(),
+                 BBnew->getName().data());
+  }
+
+  OS << "}\n";
 }
 
 void BinaryFunction::dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout) const {
