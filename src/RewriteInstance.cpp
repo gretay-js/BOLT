@@ -5045,3 +5045,4 @@ DWARFAddressRangesVector RewriteInstance::translateModuleAddressRanges(
 
   return OutputRanges;
 }
+

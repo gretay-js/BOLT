@@ -3144,7 +3144,8 @@ void BinaryFunction::dumpGraphToFile(std::string Filename) const {
   dumpGraph(of);
 }
 
-void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout) const {
+void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout,
+                                       raw_ostream *OutputLayout) const {
 
   // create bipartite graph mapping block to its sequential
   // index in the old layout. We use it to relate new order back to old.
@@ -3174,6 +3175,17 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout) const
            << pos << ":" << BBnew->getName()
            << ":0x" << Twine::utohexstr(BBnew->getInputOffset())
            << "\n";
+  }
+  if (!OutputLayout) return;
+  // Print layout to file for external processing
+  for (auto i = 0; i < BasicBlocksLayout.size(); i++) {
+    auto *BBold = BasicBlocksLayout[i];
+    auto *BBnew = NewLayout[i];
+    auto j = MapBB.find(BBnew);
+    auto pos = (j == MapBB.end()? -1 : j->second);
+    (*OutputLayout) << "0x" << Twine::utohexstr(getAddress())
+                    << ":0x" << Twine::utohexstr(BBold->getInputOffset())
+                    << ":" << i << ":" << pos <<  "\n";
   }
 }
 
@@ -3311,12 +3323,13 @@ void BinaryFunction::dumpMappingGraph(const BasicBlockOrderType &NewLayout) cons
   OS << "}\n";
 }
 
-void BinaryFunction::dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout) const {
+void BinaryFunction::dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout,
+                                           raw_ostream *OS) const {
 
   if (opts::PrintReordered) {
     dumpGraphForPass("block-reorder");
 
-    dumpMappingText(NewLayout);
+    dumpMappingText(NewLayout, OS);
 
     dumpMappingGraph(NewLayout);
   }

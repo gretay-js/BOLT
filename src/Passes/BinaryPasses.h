@@ -148,12 +148,12 @@ private:
   void modifyFunctionLayout(BinaryFunction &Function,
                             LayoutType Type,
                             bool MinBranchClusters,
-                            bool Split) const;
+                            bool Split,
+                            raw_fd_ostream *OutputLayout) const;
 
   /// Split function in two: a part with warm or hot BBs and a part with never
   /// executed BBs. The cold part is moved to a new BinaryFunction.
   void splitFunction(BinaryFunction &Function) const;
-
   bool IsAArch64{false};
 
 public:

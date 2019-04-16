@@ -17,6 +17,7 @@
 
 #include "BinaryBasicBlock.h"
 #include "BinaryContext.h"
+#include "RewriteInstance.h"
 #include "BinaryLoop.h"
 #include "DataReader.h"
 #include "DebugData.h"
@@ -417,8 +418,10 @@ private:
   }
 
   /// Print block reordering as a graph
-  void dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout) const;
-  void dumpMappingText(const BasicBlockOrderType &NewLayout) const;
+  void dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout,
+                             raw_ostream *OS) const;
+  void dumpMappingText(const BasicBlockOrderType &NewLayout,
+                       raw_ostream *OS) const;
   void dumpMappingGraph(const BasicBlockOrderType &NewLayout) const;
 
   /// Release memory taken by the list.
@@ -828,11 +831,12 @@ public:
   }
 
   /// Update layout of basic blocks used for output.
-  void updateBasicBlockLayout(BasicBlockOrderType &NewLayout) {
+  void updateBasicBlockLayout(BasicBlockOrderType &NewLayout,
+                              raw_ostream *OS) {
     BasicBlocksPreviousLayout = BasicBlocksLayout;
 
     if (NewLayout != BasicBlocksLayout) {
-      dumpBasicBlockReorder(NewLayout);
+      dumpBasicBlockReorder(NewLayout, OS);
       ModifiedLayout = true;
       BasicBlocksLayout.clear();
       BasicBlocksLayout.swap(NewLayout);

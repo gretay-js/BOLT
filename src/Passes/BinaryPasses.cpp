@@ -12,6 +12,7 @@
 #include "BinaryPasses.h"
 #include "Passes/ReorderAlgorithm.h"
 #include "llvm/Support/Options.h"
+#include "llvm/Support/raw_ostream.h"
 #include <numeric>
 
 #define DEBUG_TYPE "bolt-opts"
@@ -56,6 +57,8 @@ extern cl::opt<unsigned> Verbosity;
 extern cl::opt<bool> SplitEH;
 extern cl::opt<bolt::BinaryFunction::SplittingType> SplitFunctions;
 extern bool shouldProcess(const bolt::BinaryFunction &Function);
+extern cl::opt<bool> PrintReordered;
+extern cl::opt<std::string> OutputFilename;
 
 enum DynoStatsSortOrder : char {
   Ascending,
@@ -314,8 +317,21 @@ void ReorderBasicBlocks::runOnFunctions(
   if (opts::ReorderBlocks == ReorderBasicBlocks::LT_NONE)
     return;
 
-  IsAArch64 = BC.isAArch64();
+  raw_fd_ostream *OutputLayout = nullptr;
+  // Output layout to this file when print-reorder option enabled.
+  if (opts::PrintReordered) {
+    std::error_code EC;
+    std::string Filename = opts::OutputFilename + ".layout";
+    OutputLayout = new raw_fd_ostream(Filename, EC, sys::fs::F_None);
+    if (EC) {
+      if (opts::Verbosity >= 1) {
+        errs() << "BOLT-WARNING: Cannot create block layout file "
+               << Filename << "\n";
+      }
+    }
+  }
 
+  IsAArch64 = BC.isAArch64();
   uint64_t ModifiedFuncCount = 0;
   for (auto &It : BFs) {
     auto &Function = It.second;
@@ -329,13 +345,16 @@ void ReorderBasicBlocks::runOnFunctions(
              Function.hasEHRanges()) ||
             (LargeFunctions.find(It.first) != LargeFunctions.end());
     modifyFunctionLayout(Function, opts::ReorderBlocks, opts::MinBranchClusters,
-                         ShouldSplit);
+                         ShouldSplit, OutputLayout);
 
     if (Function.hasLayoutChanged()) {
       ++ModifiedFuncCount;
     }
   }
 
+  if (opts::PrintReordered) {
+    OutputLayout->close();
+  }
   outs() << "BOLT-INFO: basic block reordering modified layout of "
          << format("%zu (%.2lf%%) functions\n",
                    ModifiedFuncCount, 100.0 * ModifiedFuncCount / BFs.size());
@@ -377,7 +396,8 @@ void ReorderBasicBlocks::runOnFunctions(
 }
 
 void ReorderBasicBlocks::modifyFunctionLayout(BinaryFunction &BF,
-    LayoutType Type, bool MinBranchClusters, bool Split) const {
+     LayoutType Type, bool MinBranchClusters, bool Split,
+     raw_fd_ostream *OutputLayout) const {
   if (BF.size() == 0 || Type == LT_NONE)
     return;
 
@@ -431,7 +451,7 @@ void ReorderBasicBlocks::modifyFunctionLayout(BinaryFunction &BF,
 
   Algo->reorderBasicBlocks(BF, NewLayout);
 
-  BF.updateBasicBlockLayout(NewLayout);
+  BF.updateBasicBlockLayout(NewLayout, OutputLayout);
 
   if (Split)
     splitFunction(BF);
@@ -545,7 +565,7 @@ void ReorderBasicBlocks::splitFunction(BinaryFunction &BF) const {
                    << Twine::utohexstr(ColdSize) << " -> 0x"
                    << Twine::utohexstr(OriginalHotSize) << '\n');
 
-      BF.updateBasicBlockLayout(PreSplitLayout);
+      BF.updateBasicBlockLayout(PreSplitLayout, nullptr);
       for (auto &BB : BF) {
         BB.setIsCold(false);
       }
