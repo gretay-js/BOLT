@@ -3167,10 +3167,14 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout,
     auto *BBnew = NewLayout[i];
     auto j = MapBB.find(BBnew);
     auto pos = (j == MapBB.end()? -1 : j->second);
-    dbgs() << i << "\t" << pos << "\t"
+    auto k = MapBBnew.find(BBold);
+    auto kpos = (k == MapBBnew.end()? -1 : k->second);
+    dbgs() << i << "\t"
+           << pos << "\t"
            << i << ":" << BBold->getName()
            << ":0x" << Twine::utohexstr(BBold->getInputOffset())
            << ":0x" <<  Twine::utohexstr(getAddress()+BBold->getInputOffset())
+           << "->" << kpos
            << "\t"
            << pos << ":" << BBnew->getName()
            << ":0x" << Twine::utohexstr(BBnew->getInputOffset())
@@ -3181,11 +3185,11 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout,
   for (auto i = 0; i < BasicBlocksLayout.size(); i++) {
     auto *BBold = BasicBlocksLayout[i];
     auto *BBnew = NewLayout[i];
-    auto j = MapBB.find(BBnew);
-    auto pos = (j == MapBB.end()? -1 : j->second);
+    auto k = MapBBnew.find(BBold);
+    auto kpos = (k == MapBBnew.end()? -1 : k->second);
     (*OutputLayout) << "0x" << Twine::utohexstr(getAddress())
                     << ":0x" << Twine::utohexstr(BBold->getInputOffset())
-                    << ":" << i << ":" << pos <<  "\n";
+                    << ":" << i << ":" << kpos <<  "\n";
   }
 }
 
