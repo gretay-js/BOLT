@@ -3331,11 +3331,9 @@ void BinaryFunction::dumpBasicBlockReorder(const BasicBlockOrderType &NewLayout,
                                            raw_ostream *OS) const {
 
   if (opts::PrintReordered) {
-    dumpGraphForPass("block-reorder");
-
+    DEBUG(dumpGraphForPass("block-reorder"));
+    DEBUG(dumpMappingGraph(NewLayout));
     dumpMappingText(NewLayout, OS);
-
-    dumpMappingGraph(NewLayout);
   }
 }
 
