@@ -425,12 +425,24 @@ bool shouldProcess(const BinaryFunction &Function) {
     populateFunctionNames(SkipFunctionNamesFile, SkipFunctionNames);
 
   bool IsValid = true;
-  // Skip entry functions
-  if (opts::SkipAllEntryFunctions) {
+
+  if (opts::Frametables) {
+    // Ocaml specific
+
+    // Skip code_begin and code_end
     StringRef name = Function.getPrintName();
-    if (name.endswith("__entry")) {
+    if ((name.endswith("__code_begin")) || (name.endswith("__code_end"))) {
       DEBUG(dbgs ()<< "BOLT-DEBUG: (OCAML) Skipping " << Function.getPrintName() << "\n");
       return false;
+    }
+
+    // Skip entry functions
+    if (opts::SkipAllEntryFunctions) {
+      StringRef name = Function.getPrintName();
+      if (name.endswith("__entry")) {
+        DEBUG(dbgs ()<< "BOLT-DEBUG: (OCAML) Skipping " << Function.getPrintName() << "\n");
+        return false;
+      }
     }
   }
 
