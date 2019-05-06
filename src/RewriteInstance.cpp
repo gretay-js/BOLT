@@ -87,6 +87,7 @@ extern cl::opt<MacroFusionType> AlignMacroOpFusion;
 extern cl::opt<JumpTableSupportLevel> JumpTables;
 extern cl::list<std::string> ReorderData;
 extern cl::opt<bool> HotFunctionsAtEnd;
+extern cl::opt<ReorderFunctions::ReorderType> ReorderFunctions;
 
 static cl::opt<bool>
 ForceToDataRelocations("force-data-relocations",
@@ -259,8 +260,8 @@ PrintGlobals("print-globals",
   cl::cat(BoltCategory));
 
 static cl::opt<bool>
-Frametables("frametables",
-  cl::desc("rewrite ocaml frametables"),
+OCaml("ocaml",
+  cl::desc("rewrite ocaml binaries"),
   cl::ZeroOrMore,
   cl::Hidden,
   cl::cat(BoltCategory));
@@ -426,17 +427,8 @@ bool shouldProcess(const BinaryFunction &Function) {
 
   bool IsValid = true;
 
-  if (opts::Frametables) {
-    // Ocaml specific
-
-    // Skip code_begin and code_end
-    StringRef name = Function.getPrintName();
-    if ((name.endswith("__code_begin")) || (name.endswith("__code_end"))) {
-      DEBUG(dbgs ()<< "BOLT-DEBUG: (OCAML) Skipping " << Function.getPrintName() << "\n");
-      return false;
-    }
-
-    // Skip entry functions
+  if (opts::OCaml) {
+    // Ocaml specific: skip entry functions
     if (opts::SkipAllEntryFunctions) {
       StringRef name = Function.getPrintName();
       if (name.endswith("__entry")) {
@@ -2654,7 +2646,7 @@ void RewriteInstance::disassembleFunctions() {
     if (Function.getLSDAAddress() != 0)
       Function.parseLSDA(getLSDAData(), getLSDAAddress());
 
-    if (opts::Frametables) {
+    if (opts::OCaml) {
       // Add a label for each callsite, before CFG is built
       Function.labelCallsites();
     }
@@ -2703,9 +2695,10 @@ void RewriteInstance::postProcessFunctions() {
 }
 
 void RewriteInstance::updateFrametables(bool postopt)  {
+  if (!opts::OCaml) return;
   // Frametables contain relocations that point to labels in the code
   // section.  These labels are intended to mark the return address of
-  // a call instructions, They are used by Ocaml GC. However, BOLT's
+  // call instructions. They are used by Ocaml GC. However, BOLT's
   // block reordering can move the labeled instruction, along with the
   // label. This is incorrect and can cause the execution of the
   // BOLTed file to crash during GC.  We fix it by modifying these
@@ -2714,12 +2707,11 @@ void RewriteInstance::updateFrametables(bool postopt)  {
   // and is only done when frametables option is enabled.  Then, we
   // make the relocation point to this label with an addend that
   // equals to the size of the call instruction.
-  if (!opts::Frametables) return;
   outs() << "BOLT-INFO: Updating frametables\n";
   // look for frametables in data section
   auto DataSection = BC->getUniqueSectionByName(".data");
   assert(DataSection && "missing section .data for ocaml frametables rewrite");
-  assert(BC->HasRelocations && "can't hanlde frametables without relocations");
+  assert(BC->HasRelocations && "can't handle frametables without relocations");
   for (auto &Entry : BC->getBinaryDataForSection(*DataSection)) {
     const auto *BD = Entry.second;
     StringRef Name = BD->getName();
@@ -2900,6 +2892,235 @@ void RewriteInstance::updateFrametables(bool postopt)  {
       }
     }
   }
+}
+
+Relocation *
+RewriteInstance::getSegmentReloc(unit64_t EntryAddr,
+                                      bool code_begin,
+                                      StringRef UnitName) {
+  // Get relocation
+  const Relocation *RelP = BC->getRelocationAt(EntryAddr);
+  assert (!RelP);
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+        << "Found relocation at "
+        << "0x" + Twine::utohexstr(EntryAddr) << ":");
+  DEBUG(RelP->print(dbgs()));
+  DEBUG(dbgs() << "\n");
+
+  auto *RelSymbol = RelP->Symbol;
+  assert (RelSymbol && "relocation with null as its symbol");
+  auto RelName = RelSymbol->getName();
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+        << "Symbol " << RelName << "\n");
+  uint64_t RelValue = RelP->Value;
+  uint64_t RelOffset = RelP->Offset;
+  int64_t Addend = RelP->Addend;
+  uint64_t Type = RelP->Type;
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+        << "offset: "
+        << "0x" + Twine::utohexstr(RelOffset)
+        << " addend:"
+        << "0x" + Twine::utohexstr(Addend)
+        << " value: "
+        <<  "0x" + Twine::utohexstr(RelValue)
+        << "\n");
+
+  uint64_t SymbolAddress = RelValue;
+  auto Section = BC->getSectionForAddress(SymbolAddress);
+  assert (Section && "Cannot find section for symbol address");
+  const bool IsToCode = Section && Section->isText();
+  assert (!IsToCode && "Code segment entry not pointing to code section");
+
+  assert (!RelSymbol->isTemporary() && "Relocation symbol is emporary" );
+  assert (!RelSymbol->isUndefined() && "Relocation symbol is undefined");
+  assert (RelName.startswith("caml")
+          && "relocation symbol name in segment table must start with caml");
+
+  // check the suffix is as expected, then chop it off to get the unit name.
+  if (code_begin)
+    assert (RelName.endswith("__code_begin"));
+  else
+    assert (RelName.endswith("__code_end"));
+
+  UnitName = copy(RelName.substr(RelName.size() - 10 - (code_begin? 2 : 0)));
+
+  return RelP;
+}
+
+BinaryFunction *
+getContainingFunction(uint64_t SymbolAddress,
+                      StringRef UnitName,
+                      bool code_begin) {
+
+  // Find the function that contains the address of the relocation label.
+  auto *ContainingFunction =
+    getBinaryFunctionContainingAddress(SymbolAddress,
+                                       /*CheckPastEnd*/ !code_begin,
+                                       /*UseMaxSize*/ false);
+  assert (ContainingFunction && "can't find containing function");
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+        << "Containing function "
+        << ContainingFunction->getPrintName()
+        << "\n");
+  assert (ContainingFunction->getPrintName().starts_with(UnitName) &&
+          "Containing function's unit name does not match code_begin or code_end");
+
+  return ContainingFunction;
+}
+
+void
+updateSegmentReloc(uint64_t Addr, Relocation *RelP,
+                   uint64_t NewSymbolAddress) {
+  uint64_t SymbolAddress = RelP->Value;
+  auto Name = RelP->Symbol->getName();
+  DEBUG(dbgs () << "Moving relocation at "
+        << "0x" + Twine::utohexstr(EntryAddr)
+        << " symbol " << Name
+        << "at 0x" + Twine::utohexstr(SymbolAddress)
+        << " new address: 0x" + Twine::utohexstr(newSymbolAddress)
+        << "\n");
+
+  assert (BC->removeRelocationAt() || "remove relocation failed!");
+
+   MCSymbol *NewSymbol =
+        BC->getOrCreateGlobalSymbol(NewSymbolAddress, Name);
+   BC->addRelocation(Addr, NewSymbol, RelP->Type);
+}
+
+void RewriteInstance::updateCodeSegmentTable ()  {
+  if (!opts::OCaml) return;
+  // Code segment table contains relocations that point to labels in the code
+  // section.  These labels mark the beginning and the end of code segment
+  // for each compilation units. They are used by Ocaml GC (although they
+  // may become obsolete soon and already not used as much
+  // as before when ocaml's no-naked-pointers option is on).
+  // However, BOLT's function reordering can move the first function
+  // in the segment, or the last function, along with the resp. label.
+  // This is incorrect and can cause the execution of the
+  // BOLTed file to crash during GC.  We fix these relocations
+  // after function reordering is finished.
+  // Additionally, all functions that were moved out
+  // of their original position must be moved to new segment
+  // marked with designated "hot" labels that the segment table knows about.
+  // If the original binary already contained hot labels,
+  // we use them, otherwise, we add new ones and update the segment
+  // table accordingly.
+  outs() << "BOLT-INFO: Updating code segment table\n";
+  // No changes when function reordering is disabled
+  if (opts::ReorderFunctions == ReorderFunctions::RT_NONE) return;
+
+  // function splitting into cold section is not supported yet.
+  // It would require an additional entry in code segment table to mark cold segment.
+  assert ((opts::SplitFunctions = BinaryFunction::ST_NONE) ||
+          "Cannot split functions in ocaml binaries. \
+           Code segment table changes not implemented yet.");
+
+  // look for code segment table by name that is fixed by ocaml compiler.
+  BinaryData *BD = BC->getBinaryDataByName("caml_code_segments");
+  assert (BD || "Cannot find binary symbol caml_code_segments");
+  uint64_t SegmentTableAddress = BD->getAddress();
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+        << "caml_code_segments at "
+        << "0x" + Twine::utohexstr(SegmentTableAddress) << "\n");
+  // code segment table is in the data section
+  auto DataSection = BC->getUniqueSectionByName(".data");
+  assert(DataSection && "missing section .data for ocaml frametables rewrite");
+  uint64_t Start = Section.getStartAddress(DataSection);
+  uint64_t End = Section.getEndAddress(DataSection);
+  assert ((Start <= SegmentTableAddress && SegmentTableAddress < End) ||
+          "Segment table is not in the data section.");
+  auto *Data = DataSection.getData();
+
+  // We rely on the structure of the code segment table,
+  // which is simply a sequence of 64-bit non-zero values,
+  // terminated with value 0.
+  // The value appear pairs referring to symbols
+  // camlX_code_begin
+  // camlX_code_end
+  // where X is the name of the compilation unit.
+  for (uint64_t EntryAddr = SegmentTableAddress;
+       EntryAddr < End;
+       EntryAddr += 8) {
+    // check for terminating 0
+    DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) segment table entry at "
+              << "0x" + Twine::utohexstr(EntryAddr));
+    const BinaryData *EntryData = BC->getBinaryDataAtAddress(EntryAddr);
+    assert (EntryData && "missing binary data");
+    DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) segment table entry size "
+              << "0x" + Twine::utohexstr(EntryData->getSize()));
+    assert (EntryData->getSize() == 8
+            && "unexpected size of code segment table entry");
+    uint64_t DataOffset = EntryAddr - Start;
+    unit64_t EntryValue = reinterpret_cast<const uint64_t>Data[DataOffset];
+    if (EntryValue == 0) break;
+    // entries must be paired
+    assert (reinterpret_cast<const uint64_t>Data[DataOffset+8] != 0);
+    // find corresponding relocations and containing functions
+    // for begin and end symbols.
+    StringRef bUnitName;
+    StringRef eUnitName;
+
+    Relocation *bR = getSegmentReloc(EntryAddr, /* code_begin */ true,
+                                          bUnitName);
+    Relocation *eR = getSegmentReloc(EntryAddr+8, /* code_begin */ false,
+                                          eUnitName);
+    assert (bUnitName == eUnitName &&
+            "Relocation symbols for code_begin and code_end: unit names don't match");
+
+    ContainingFunction *bCF, *eCF;
+    bCF = getContainingFunction(bR->Value, bUnitName, /* code_begin */ true);
+    eCF = getContainingFunction(eR->Value, eUnitName, /* code_begin */ false);
+
+    uint64_t bAddr = bCF->getAddress();
+    uint64_t eAddr = eCF->getAddress();
+    bool bMoved = bCF->hasValidIndex();
+    bool eMoved = eCF->hasValidIndex();
+
+    /* Function reordering can affect code_begin and code_end.
+       Block reordering within a function can affect code_end but
+       not code_begin because block reordering preserves entry blocks.*/
+
+    // Check whether the function was moved.
+    bool bNeedsUpdate = bMoved;
+    bool eNeedsUpdate = eMoved;
+    uint64_t newSymbolAddress =
+      ContainingFunction->translateInputToOutputAddress(SymbolAddress);
+    if (newSymbolAddress != SymbolAddress) {
+      eNeedsUpdate = true;
+      if (!eMoved) eMoved = true;
+    }
+
+    while (bAddr < eAddr && (bMoved || eMoved)) {
+      if (bMoved) {
+        // find the next function that hasn't moved, or code_end
+        bCF = getFunctionContainingAddress(bAddr + bCF->getSize() + 1,
+                                           UnitName,/*code_begin*/true);
+        bAddr = bCF->getAddress();
+        bMoved = bCF->hasValidIndex();
+      }
+      if (eMoved) {
+        // find the previous function that hasn't move, or code_begin
+        eCF = getContainingFunction(eAddr-1, UnitName, /*code_begin*/false);
+        eAddr = eCF->getAddress();
+        eMoved = eCF->hasValidIndex();
+      }
+    }
+
+    // CR gyorsh: handle the empty segment case correctly.
+    if (bNeedsUpdate) {
+      updateSegmentReloc(EntryAddr, bR, bCF->getAddress());
+    }
+    if (eNeedsUpdate) {
+      updateSegmentReloc(EntryAddr+8, bR, eCF->getAddress()+eCF->getSize());
+    }
+  }
+
+  // TODO: wrap moved functions in hot code begin and end
+  // If at least one function moved and hot code begin and end symbols didn't
+  // exists, add them to the segment table.
+  // TODO: how to re-optimize binary that already has non-empty hot code segment?
+  // Reuse the same symbols or add new ones?
+  // TODO: handle cold code similarly to hot with a special segment.
 }
 
 void RewriteInstance::runOptimizationPasses() {
@@ -3187,7 +3408,8 @@ void RewriteInstance::emitFunctions() {
   if (!BC->HasRelocations && opts::UpdateDebugSections)
     updateDebugLineInfoForNonSimpleFunctions();
 
-  updateFrametables(/* postopt */ true);;
+  updateFrametables(/* postopt */ true);
+  updateCodeSegmentTable();
   emitDataSections(Streamer.get());
 
   // Relocate .eh_frame to .eh_frame_old.
