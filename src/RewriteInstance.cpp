@@ -14,6 +14,7 @@
 #include "BinaryContext.h"
 #include "BinaryFunction.h"
 #include "BinaryPassManager.h"
+#include "Passes/ReorderFunctions.h"
 #include "CacheMetrics.h"
 #include "DataAggregator.h"
 #include "DataReader.h"
@@ -88,6 +89,7 @@ extern cl::opt<JumpTableSupportLevel> JumpTables;
 extern cl::list<std::string> ReorderData;
 extern cl::opt<bool> HotFunctionsAtEnd;
 extern cl::opt<ReorderFunctions::ReorderType> ReorderFunctions;
+extern cl::opt<ReorderBasicBlocks::LayoutType> ReorderBlocks;
 
 static cl::opt<bool>
 ForceToDataRelocations("force-data-relocations",
@@ -2894,13 +2896,13 @@ void RewriteInstance::updateFrametables(bool postopt)  {
   }
 }
 
-Relocation *
-RewriteInstance::getSegmentReloc(unit64_t EntryAddr,
+const Relocation *
+RewriteInstance::getSegmentReloc(uint64_t EntryAddr,
                                       bool code_begin,
                                       StringRef UnitName) {
   // Get relocation
   const Relocation *RelP = BC->getRelocationAt(EntryAddr);
-  assert (!RelP);
+  assert (RelP && "Missing relocation");
   DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
         << "Found relocation at "
         << "0x" + Twine::utohexstr(EntryAddr) << ":");
@@ -2928,10 +2930,14 @@ RewriteInstance::getSegmentReloc(unit64_t EntryAddr,
   uint64_t SymbolAddress = RelValue;
   auto Section = BC->getSectionForAddress(SymbolAddress);
   assert (Section && "Cannot find section for symbol address");
-  const bool IsToCode = Section && Section->isText();
-  assert (!IsToCode && "Code segment entry not pointing to code section");
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) Section for address"
+        <<  "0x" + Twine::utohexstr(RelValue)
+        << " " << Section->getName()
+        << "\n");
+  const bool IsToCode = Section->isText();
+  assert (IsToCode && "Code segment entry not pointing to code section");
 
-  assert (!RelSymbol->isTemporary() && "Relocation symbol is emporary" );
+  assert (!RelSymbol->isTemporary() && "Relocation symbol is temporary" );
   assert (!RelSymbol->isUndefined() && "Relocation symbol is undefined");
   assert (RelName.startswith("caml")
           && "relocation symbol name in segment table must start with caml");
@@ -2942,15 +2948,15 @@ RewriteInstance::getSegmentReloc(unit64_t EntryAddr,
   else
     assert (RelName.endswith("__code_end"));
 
-  UnitName = copy(RelName.substr(RelName.size() - 10 - (code_begin? 2 : 0)));
+  UnitName = RelName.substr(RelName.size() - 10 - (code_begin? 2 : 0));
 
   return RelP;
 }
 
 BinaryFunction *
-getContainingFunction(uint64_t SymbolAddress,
-                      StringRef UnitName,
-                      bool code_begin) {
+RewriteInstance::getSegmentFunction(uint64_t SymbolAddress,
+                                    StringRef UnitName,
+                                    bool code_begin) {
 
   // Find the function that contains the address of the relocation label.
   auto *ContainingFunction =
@@ -2958,29 +2964,29 @@ getContainingFunction(uint64_t SymbolAddress,
                                        /*CheckPastEnd*/ !code_begin,
                                        /*UseMaxSize*/ false);
   assert (ContainingFunction && "can't find containing function");
+  StringRef Name = ContainingFunction->getPrintName();
   DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
-        << "Containing function "
-        << ContainingFunction->getPrintName()
-        << "\n");
-  assert (ContainingFunction->getPrintName().starts_with(UnitName) &&
+        << "Containing function " << Name << "\n");
+  assert (Name.startswith(UnitName) &&
           "Containing function's unit name does not match code_begin or code_end");
 
   return ContainingFunction;
 }
 
 void
-updateSegmentReloc(uint64_t Addr, Relocation *RelP,
-                   uint64_t NewSymbolAddress) {
+RewriteInstance::updateSegmentReloc(uint64_t Addr,
+                                    const Relocation *RelP,
+                                    uint64_t NewSymbolAddress) {
   uint64_t SymbolAddress = RelP->Value;
   auto Name = RelP->Symbol->getName();
   DEBUG(dbgs () << "Moving relocation at "
-        << "0x" + Twine::utohexstr(EntryAddr)
+        << "0x" + Twine::utohexstr(Addr)
         << " symbol " << Name
         << "at 0x" + Twine::utohexstr(SymbolAddress)
-        << " new address: 0x" + Twine::utohexstr(newSymbolAddress)
+        << " new address: 0x" + Twine::utohexstr(NewSymbolAddress)
         << "\n");
 
-  assert (BC->removeRelocationAt() || "remove relocation failed!");
+  assert (BC->removeRelocationAt(Addr) || "remove relocation failed!");
 
    MCSymbol *NewSymbol =
         BC->getOrCreateGlobalSymbol(NewSymbolAddress, Name);
@@ -3025,11 +3031,20 @@ void RewriteInstance::updateCodeSegmentTable ()  {
   // code segment table is in the data section
   auto DataSection = BC->getUniqueSectionByName(".data");
   assert(DataSection && "missing section .data for ocaml frametables rewrite");
-  uint64_t Start = Section.getStartAddress(DataSection);
-  uint64_t End = Section.getEndAddress(DataSection);
+  uint64_t Start = DataSection->getAddress();
+  uint64_t End = DataSection->getEndAddress();
   assert ((Start <= SegmentTableAddress && SegmentTableAddress < End) ||
           "Segment table is not in the data section.");
-  auto *Data = DataSection.getData();
+  uint8_t *Data = DataSection->getData();
+
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) segment table at "
+        << "0x" + Twine::utohexstr(SegmentTableAddress) << "\n");
+  const BinaryData *EntryData = BC->getBinaryDataAtAddress(SegmentTableAddress);
+  assert (EntryData && "missing binary data");
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) segment table entry size "
+        << "0x" + Twine::utohexstr(EntryData->getSize()) << "\n");
+  assert ((EntryData->getSize() - 8) % 16 == 0
+          && "unexpected size of code segment table entry");
 
   // We rely on the structure of the code segment table,
   // which is simply a sequence of 64-bit non-zero values,
@@ -3040,67 +3055,67 @@ void RewriteInstance::updateCodeSegmentTable ()  {
   // where X is the name of the compilation unit.
   for (uint64_t EntryAddr = SegmentTableAddress;
        EntryAddr < End;
-       EntryAddr += 8) {
-    // check for terminating 0
+       EntryAddr += 16) {
     DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) segment table entry at "
-              << "0x" + Twine::utohexstr(EntryAddr));
-    const BinaryData *EntryData = BC->getBinaryDataAtAddress(EntryAddr);
-    assert (EntryData && "missing binary data");
-    DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) segment table entry size "
-              << "0x" + Twine::utohexstr(EntryData->getSize()));
-    assert (EntryData->getSize() == 8
-            && "unexpected size of code segment table entry");
+          << "0x" + Twine::utohexstr(EntryAddr) << "\n");
+    // check for terminating 0
     uint64_t DataOffset = EntryAddr - Start;
-    unit64_t EntryValue = reinterpret_cast<const uint64_t>Data[DataOffset];
-    if (EntryValue == 0) break;
-    // entries must be paired
-    assert (reinterpret_cast<const uint64_t>Data[DataOffset+8] != 0);
+    const uint64_t *EntryValue = reinterpret_cast<const uint64_t *>(Data+DataOffset);
+    DEBUG(dbgs() << "EntryValue=0x" + Twine::utohexstr(*EntryValue) + "\n");
+    if (*EntryValue == 0) break;
+    // check that the next entry is also not 0
+    EntryValue = reinterpret_cast<const uint64_t *>(Data+DataOffset+8);
+    DEBUG(dbgs() << "EntryValue=0x" + Twine::utohexstr(*EntryValue) + "\n");
+    assert (*EntryValue != 0 && "Unexpected terminating entry in segment table.");
     // find corresponding relocations and containing functions
     // for begin and end symbols.
     StringRef bUnitName;
     StringRef eUnitName;
 
-    Relocation *bR = getSegmentReloc(EntryAddr, /* code_begin */ true,
-                                          bUnitName);
-    Relocation *eR = getSegmentReloc(EntryAddr+8, /* code_begin */ false,
-                                          eUnitName);
+    const Relocation *bR = getSegmentReloc(EntryAddr, /* code_begin */ true,
+                                           bUnitName);
+    const Relocation *eR = getSegmentReloc(EntryAddr+8, /* code_begin */ false,
+                                           eUnitName);
     assert (bUnitName == eUnitName &&
             "Relocation symbols for code_begin and code_end: unit names don't match");
 
-    ContainingFunction *bCF, *eCF;
-    bCF = getContainingFunction(bR->Value, bUnitName, /* code_begin */ true);
-    eCF = getContainingFunction(eR->Value, eUnitName, /* code_begin */ false);
+    BinaryFunction *bCF, *eCF;
+    bCF = getSegmentFunction(bR->Value, bUnitName, /* code_begin */ true);
+    eCF = getSegmentFunction(eR->Value, eUnitName, /* code_begin */ false);
 
     uint64_t bAddr = bCF->getAddress();
     uint64_t eAddr = eCF->getAddress();
     bool bMoved = bCF->hasValidIndex();
     bool eMoved = eCF->hasValidIndex();
 
-    /* Function reordering can affect code_begin and code_end.
-       Block reordering within a function can affect code_end but
-       not code_begin because block reordering preserves entry blocks.*/
-
-    // Check whether the function was moved.
+    // Function reordering can affect code_begin and code_end.
+    // Block reordering within a function can affect code_end but
+    // not code_begin because block reordering preserves entry blocks
+    // Check whether the functions were moved
     bool bNeedsUpdate = bMoved;
     bool eNeedsUpdate = eMoved;
-    uint64_t newSymbolAddress =
-      ContainingFunction->translateInputToOutputAddress(SymbolAddress);
-    if (newSymbolAddress != SymbolAddress) {
-      eNeedsUpdate = true;
-      if (!eMoved) eMoved = true;
-    }
+    // Check whether the block containing code_end was moved
+    if (opts::ReorderBlocks != ReorderBasicBlocks::LT_NONE) {
+        auto SymbolAddress = eR->Value;
+        uint64_t newSymbolAddress =
+          eCF->translateInputToOutputAddress(SymbolAddress);
+        if (newSymbolAddress != SymbolAddress) {
+          eNeedsUpdate = true;
+          if (!eMoved) eMoved = true;
+        }
+      }
 
     while (bAddr < eAddr && (bMoved || eMoved)) {
       if (bMoved) {
         // find the next function that hasn't moved, or code_end
-        bCF = getFunctionContainingAddress(bAddr + bCF->getSize() + 1,
-                                           UnitName,/*code_begin*/true);
+        bCF = getSegmentFunction(bAddr + bCF->getSize() + 1,
+                                 bUnitName,/*code_begin*/true);
         bAddr = bCF->getAddress();
         bMoved = bCF->hasValidIndex();
       }
       if (eMoved) {
         // find the previous function that hasn't move, or code_begin
-        eCF = getContainingFunction(eAddr-1, UnitName, /*code_begin*/false);
+        eCF = getSegmentFunction(eAddr-1, bUnitName, /*code_begin*/false);
         eAddr = eCF->getAddress();
         eMoved = eCF->hasValidIndex();
       }

@@ -155,13 +155,26 @@ public:
 
   void postProcessFunctions();
 
-  /// Update frametables (ocaml native code).
+  /// Ocaml native code
+  /// Update Ocaml's frametables.
   /// This function is invoked twice. The bulk of the work to fix up
   /// the relocations is done at the beginning,
   /// when instruction offset annotations are still available.
   /// The second invocation (with postopt argument set) cleans up the frametable
   /// after dead code and conditional tail call passes (UCE,SCTC).
   void updateFrametables(bool postopt);
+  // Update Ocaml's code segment table after function and block reordering.
+  void updateCodeSegmentTable();
+  /// Helper functions for updateCodeSegmentTable
+  void updateSegmentReloc(uint64_t Addr,
+                          const Relocation *RelP,
+                          uint64_t NewSymbolAddress);
+  BinaryFunction *getSegmentFunction(uint64_t SymbolAddress,
+                                     StringRef UnitName,
+                                     bool code_begin);
+  const Relocation *getSegmentReloc(uint64_t EntryAddr,
+                                    bool code_begin,
+                                    StringRef UnitName);
 
   /// Run optimizations that operate at the binary, or post-linker, level.
   void runOptimizationPasses();

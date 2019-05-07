@@ -24,6 +24,9 @@
 #include <set>
 #include <map>
 
+#undef  DEBUG_TYPE
+#define DEBUG_TYPE "bolt-section"
+
 namespace llvm {
 
 using namespace object;
@@ -316,6 +319,8 @@ public:
 
   /// Remove non-pending relocation with the given /p Offset.
   bool removeRelocationAt(uint64_t Offset) {
+    DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+          << "removeRelocationAt 0x" + Twine::utohexstr(Offset) << "\n");
     Relocation Key{Offset, 0, 0, 0, 0};
     auto Itr = Relocations.find(Key);
     if (Itr != Relocations.end()) {
@@ -334,6 +339,8 @@ public:
                      uint64_t Value = 0,
                      bool Pending = false) {
     assert(Offset < getSize() && "offset not within section bounds");
+    DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+          << "addRelocation at offset 0x" + Twine::utohexstr(Offset) << "\n");
     if (!Pending) {
       Relocations.emplace(Relocation{Offset, Symbol, Type, Addend, Value});
     } else {
@@ -343,6 +350,8 @@ public:
 
   /// Lookup the relocation (if any) at the given /p Offset.
   const Relocation *getRelocationAt(uint64_t Offset) const {
+    DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+          << "getRelocationAt 0x" + Twine::utohexstr(Offset) << "\n");
     Relocation Key{Offset, 0, 0, 0, 0};
     auto Itr = Relocations.find(Key);
     return Itr != Relocations.end() ? &*Itr : nullptr;

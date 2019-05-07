@@ -137,7 +137,7 @@ PrintSortedBy("print-sorted-by",
   cl::ZeroOrMore,
   cl::cat(BoltOptCategory));
 
-static cl::opt<bolt::ReorderBasicBlocks::LayoutType>
+cl::opt<bolt::ReorderBasicBlocks::LayoutType>
 ReorderBlocks("reorder-blocks",
   cl::desc("change layout of basic blocks in a function"),
   cl::init(bolt::ReorderBasicBlocks::LT_NONE),
