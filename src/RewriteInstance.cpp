@@ -3070,6 +3070,8 @@ void RewriteInstance::updateCodeSegmentTable ()  {
   assert ((EntryData->getSize() - 8) % 16 == 0
           && "unexpected size of code segment table entry");
 
+  bool FoundHotSymbols = false;
+  uint64_t EntryAddr;
   // We rely on the structure of the code segment table,
   // which is simply a sequence of 64-bit non-zero values,
   // terminated with value 0.
@@ -3077,7 +3079,7 @@ void RewriteInstance::updateCodeSegmentTable ()  {
   // camlX_code_begin
   // camlX_code_end
   // where X is the name of the compilation unit.
-  for (uint64_t EntryAddr = SegmentTableAddress;
+  for (EntryAddr = SegmentTableAddress;
        EntryAddr < End;
        EntryAddr += 16) {
     DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) segment table entry at "
@@ -3101,8 +3103,12 @@ void RewriteInstance::updateCodeSegmentTable ()  {
     const Relocation *eR = getSegmentReloc(EntryAddr+8, /* code_begin */ false,
                                            &eUnitName);
     DEBUG(dbgs() << "UnitName:" << bUnitName << " " << eUnitName << "\n");
+    assert (bUnitName.take_front(bUnitName.size() - 10) ==
+            eUnitName.take_front(eUnitName.size() - 8));
     BinaryFunction *bCF, *eCF;
-
+    if (!FoundHotSymbols && bUnitName == "caml_hot__code_begin") {
+      FoundHotSymbols = true;
+    }
     bCF = getSegmentFunction(bR->Value, bUnitName, /* code_begin */ true);
     eCF = getSegmentFunction(eR->Value, eUnitName, /* code_begin */ false);
 
@@ -3177,9 +3183,18 @@ void RewriteInstance::updateCodeSegmentTable ()  {
     }
   }
 
-  // TODO: wrap moved functions in hot code begin and end
-  // If at least one function moved and hot code begin and end symbols didn't
-  // exists, add them to the segment table.
+  assert (FoundHotSymbols
+          && "Input OCaml binary must be compiled with -function-sections");
+  // TODO: If hot code begin and end symbols didn't exists,
+  // add them to the segment table.
+  // TODO: Check that at least one function moved.
+  // if (!FoundHotSymbols) {
+  //   b = BC->getGlobalSymbol("caml_hot__code_begin").getOutputAddress();
+  //   e = BC->getGlobalSymbol("caml_hot__code_begin").getOutputAddress();
+  //   EntryData.add(EntryAddr,b);
+  //   EntryData.add(EntryAddr+8,e);
+  //   EntryData.add(EntryAddr+16,0);
+  // }
   // TODO: how to re-optimize binary that already has non-empty hot code segment?
   // Reuse the same symbols or add new ones?
   // TODO: handle cold code similarly to hot with a special segment.
