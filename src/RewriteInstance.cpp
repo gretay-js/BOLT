@@ -2978,7 +2978,7 @@ RewriteInstance::getSegmentFunction(uint64_t SymbolAddress,
   auto *ContainingFunction =
     getBinaryFunctionContainingAddress(SymbolAddress,
                                        /*CheckPastEnd*/ !code_begin,
-                                       /*UseMaxSize*/ false);
+                                       /*UseMaxSize*/ true);
   assert (ContainingFunction && "can't find containing function");
   DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
         << "Containing function " << ContainingFunction->getPrintName()
@@ -3214,6 +3214,10 @@ void RewriteInstance::emitFunction(MCStreamer &Streamer,
     return;
 
   if (Function.getState() == BinaryFunction::State::Empty)
+    return;
+
+  if ((opts::OCaml) &&
+      (StringRef(Function.getPrintName()).startswith("caml_hot__code_")))
     return;
 
   MCSection *Section;
@@ -4787,7 +4791,7 @@ void RewriteInstance::patchELFSymTabs(ELFObjectFile<ELFT> *File) {
 
     assert((!IsHotTextUpdated || IsHotTextUpdated == 2) &&
            "either none or both __hot_start/__hot_end symbols were expected");
-    assert((!IsOCamlHotTextUpdated || IsHotTextUpdated == 2) &&
+    assert((!IsOCamlHotTextUpdated || IsOCamlHotTextUpdated == 2) &&
            "either none or both caml_hot__code_begin/caml_hot__code_end \
             symbols were expected");
     assert((!IsHotDataUpdated || IsHotDataUpdated == 2) &&
