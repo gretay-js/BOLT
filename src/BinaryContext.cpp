@@ -231,6 +231,21 @@ BinaryContext::getSubBinaryData(BinaryData *BD) {
   }
   return make_range(Start, End);
 }
+MCSymbol *BinaryContext::updateGlobalSymbol(StringRef Name,
+                                            uint64_t Address,
+                                            uint64_t NewAddress) {
+
+  auto Iter = GlobalSymbols.find(Name);
+  assert(Iter != GlobalSymbols.end() && "Symbol name not found");
+  BinaryData *BD = Iter->second;
+  assert (BD->getAddress () == Address
+          && "Cannot find symbol to update at address");
+  // Remove it
+  GlobalSymbols.erase(Name);
+  BD->remove(Name);
+  // Register it with the new address
+  return registerNameAtAddress(Name, NewAddress, 0, 0);
+}
 
 MCSymbol *BinaryContext::getOrCreateGlobalSymbol(uint64_t Address,
                                                  Twine Prefix,

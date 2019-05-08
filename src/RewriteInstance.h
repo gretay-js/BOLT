@@ -168,13 +168,14 @@ public:
   /// Helper functions for updateCodeSegmentTable
   void updateSegmentReloc(uint64_t Addr,
                           const Relocation *RelP,
+                          StringRef Name,
                           uint64_t NewSymbolAddress);
   BinaryFunction *getSegmentFunction(uint64_t SymbolAddress,
                                      StringRef UnitName,
                                      bool code_begin);
   const Relocation *getSegmentReloc(uint64_t EntryAddr,
                                     bool code_begin,
-                                    StringRef UnitName);
+                                    StringRef *UnitName);
 
   /// Run optimizations that operate at the binary, or post-linker, level.
   void runOptimizationPasses();

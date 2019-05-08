@@ -106,7 +106,7 @@ public:
   bool isAtomic() const {
     return isTopLevelJumpTable() || !Parent;
   }
-  
+
   iterator_range<std::vector<std::string>::const_iterator> names() const {
     return make_range(Names.begin(), Names.end());
   }
@@ -117,6 +117,12 @@ public:
 
   iterator_range<std::vector<MemInfo>::const_iterator> memData() const {
     return make_range(MemData.begin(), MemData.end());
+  }
+
+  void remove(StringRef Name) {
+    std::remove(Names.begin(), Names.end(), Name.str());
+    std::remove_if(Symbols.begin(), Symbols.end(),
+                   [Name](MCSymbol *Sym){return Sym->getName() == Name;});
   }
 
   StringRef getName() const { return Names.front(); }
@@ -134,6 +140,17 @@ public:
         return true;
     }
     return false;
+  }
+  // Returns empty string if not found a Name with required prefix and suffix.
+  StringRef getNameWith(const StringRef Prefix, const StringRef Suffix) const {
+    StringRef Result;
+    for (const auto &Name : Names) {
+      Result = Name;
+      if (StringRef(Result).startswith(Prefix) &&
+          StringRef(Result).endswith(Suffix))
+        return Result;
+    }
+    return "";
   }
 
   bool hasSymbol(const MCSymbol *Symbol) const {

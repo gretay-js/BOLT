@@ -383,6 +383,10 @@ public:
     BinaryDataMap.clear();
   }
 
+  /// Update the symbol's definition from Address to NewAddress.
+  MCSymbol *updateGlobalSymbol(StringRef Name,
+                               uint64_t Address,
+                               uint64_t NewAddress);
 
   /// Return a global symbol registered at a given \p Address and \p Size.
   /// If no symbol exists, create one with unique name using \p Prefix.

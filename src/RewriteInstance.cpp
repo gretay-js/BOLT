@@ -2216,12 +2216,12 @@ void RewriteInstance::readRelocations(const SectionRef &Section) {
     if (ForceRelocation) {
       auto Name = Relocation::isGOT(Rel.getType()) ? "Zero" : SymbolName;
       ReferencedSymbol = BC->registerNameAtAddress(Name, 0, 0, 0);
-      SymbolAddress = 0;
       if (Relocation::isGOT(Rel.getType()))
         Addend = Address;
       DEBUG(dbgs() << "BOLT-DEBUG: forcing relocation against symbol "
-                   << SymbolName << " with addend " << Addend << '\n');
-    } else if (ReferencedBF) {
+            << SymbolName << " with addend " << Addend << '\n');
+    }
+    else if (ReferencedBF) {
       ReferencedSymbol = ReferencedBF->getSymbol();
 
       // Adjust the point of reference to a code location inside a function.
@@ -2358,7 +2358,6 @@ void RewriteInstance::readRelocations(const SectionRef &Section) {
         if (!opts::AllowSectionRelocations && IsSectionRelocation) {
           markAmbiguousRelocations(BD);
         }
-
         ReferencedSymbol = BD->getSymbol();
         Addend += (SymbolAddress - BD->getAddress());
         SymbolAddress = BD->getAddress();
@@ -2899,7 +2898,7 @@ void RewriteInstance::updateFrametables(bool postopt)  {
 const Relocation *
 RewriteInstance::getSegmentReloc(uint64_t EntryAddr,
                                       bool code_begin,
-                                      StringRef UnitName) {
+                                      StringRef *UnitName) {
   // Get relocation
   const Relocation *RelP = BC->getRelocationAt(EntryAddr);
   assert (RelP && "Missing relocation");
@@ -2925,12 +2924,13 @@ RewriteInstance::getSegmentReloc(uint64_t EntryAddr,
         << "0x" + Twine::utohexstr(Addend)
         << " value: "
         <<  "0x" + Twine::utohexstr(RelValue)
+        <<  " type: " << Type
         << "\n");
 
   uint64_t SymbolAddress = RelValue;
   auto Section = BC->getSectionForAddress(SymbolAddress);
   assert (Section && "Cannot find section for symbol address");
-  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) Section for address"
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) Section for address "
         <<  "0x" + Twine::utohexstr(RelValue)
         << " " << Section->getName()
         << "\n");
@@ -2942,14 +2942,26 @@ RewriteInstance::getSegmentReloc(uint64_t EntryAddr,
   assert (RelName.startswith("caml")
           && "relocation symbol name in segment table must start with caml");
 
-  // check the suffix is as expected, then chop it off to get the unit name.
-  if (code_begin)
-    assert (RelName.endswith("__code_begin"));
-  else
-    assert (RelName.endswith("__code_end"));
-
-  UnitName = RelName.substr(RelName.size() - 10 - (code_begin? 2 : 0));
-
+  // RelValue
+  // check the suffix is as expected, then chop it off to get the unit name
+  StringRef Suffix = (code_begin? "__code_begin" : "__code_end");
+  if (!RelName.endswith(Suffix)) {
+    // When reading relocations from data to code, bolt updates the referenced
+    // symbol to be relative to a function-local label, instead of the original
+    // symbol referenced by this relocation in ELF.
+    // Iterate over all labels at SymbolAddress to ensure there is exactly one
+    // symbol with the correct suffix, and extact unit name.
+    // This is not required for functionality, only as a safety measure.
+    const BinaryData *BD = BC->getBinaryDataAtAddress(SymbolAddress);
+    assert (BD && "Relocation symbol is not registered at its address");
+    RelName = BD->getNameWith("caml", Suffix);
+    assert (!RelName.empty()
+            && "Cannot find symbol in the expected format at this address.");
+  }
+  // auto size = RelName.size() - Suffix.size();
+  // *UnitName = RelName.str().substr(size);
+  *UnitName = RelName;
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) " << *UnitName << "\n");
   return RelP;
 }
 
@@ -2959,16 +2971,18 @@ RewriteInstance::getSegmentFunction(uint64_t SymbolAddress,
                                     bool code_begin) {
 
   // Find the function that contains the address of the relocation label.
+  DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
+        << "At 0x" + Twine::utohexstr(SymbolAddress)
+        << " Unit " << UnitName
+        << "\n");
   auto *ContainingFunction =
     getBinaryFunctionContainingAddress(SymbolAddress,
                                        /*CheckPastEnd*/ !code_begin,
                                        /*UseMaxSize*/ false);
   assert (ContainingFunction && "can't find containing function");
-  StringRef Name = ContainingFunction->getPrintName();
   DEBUG(dbgs() << "BOLT-DEBUG: (OCAML) "
-        << "Containing function " << Name << "\n");
-  assert (Name.startswith(UnitName) &&
-          "Containing function's unit name does not match code_begin or code_end");
+        << "Containing function " << ContainingFunction->getPrintName()
+        << "\n");
 
   return ContainingFunction;
 }
@@ -2976,21 +2990,31 @@ RewriteInstance::getSegmentFunction(uint64_t SymbolAddress,
 void
 RewriteInstance::updateSegmentReloc(uint64_t Addr,
                                     const Relocation *RelP,
+                                    StringRef Name,
                                     uint64_t NewSymbolAddress) {
   uint64_t SymbolAddress = RelP->Value;
-  auto Name = RelP->Symbol->getName();
+  if (NewSymbolAddress == SymbolAddress) return;
   DEBUG(dbgs () << "Moving relocation at "
         << "0x" + Twine::utohexstr(Addr)
-        << " symbol " << Name
-        << "at 0x" + Twine::utohexstr(SymbolAddress)
+        << " new name " << Name
+        << " bolt name " << RelP->Symbol->getName()
+        << " at 0x" + Twine::utohexstr(SymbolAddress)
         << " new address: 0x" + Twine::utohexstr(NewSymbolAddress)
         << "\n");
 
   assert (BC->removeRelocationAt(Addr) || "remove relocation failed!");
 
-   MCSymbol *NewSymbol =
-        BC->getOrCreateGlobalSymbol(NewSymbolAddress, Name);
-   BC->addRelocation(Addr, NewSymbol, RelP->Type);
+  uint64_t RelType = RelP->Type;
+  MCSymbol *NewSymbol =
+    BC->updateGlobalSymbol(Name, SymbolAddress, NewSymbolAddress);
+
+  DEBUG(dbgs() << "BOLT-DEBUG (OCAML): update " << Name
+        << " from 0x" + Twine::utohexstr(SymbolAddress)
+        << " to 0x" + Twine::utohexstr(NewSymbolAddress)
+        << " type=" << RelType
+        << "\n" );
+
+  BC->addRelocation(Addr, NewSymbol, RelType, 0, NewSymbolAddress);
 }
 
 void RewriteInstance::updateCodeSegmentTable ()  {
@@ -3015,11 +3039,11 @@ void RewriteInstance::updateCodeSegmentTable ()  {
   // No changes when function reordering is disabled
   if (opts::ReorderFunctions == ReorderFunctions::RT_NONE) return;
 
-  // function splitting into cold section is not supported yet.
+  // Function splitting into cold section is not supported yet.
   // It would require an additional entry in code segment table to mark cold segment.
   assert ((opts::SplitFunctions = BinaryFunction::ST_NONE) ||
           "Cannot split functions in ocaml binaries. \
-           Code segment table changes not implemented yet.");
+           Code segment table update not implemented yet.");
 
   // look for code segment table by name that is fixed by ocaml compiler.
   BinaryData *BD = BC->getBinaryDataByName("caml_code_segments");
@@ -3073,13 +3097,12 @@ void RewriteInstance::updateCodeSegmentTable ()  {
     StringRef eUnitName;
 
     const Relocation *bR = getSegmentReloc(EntryAddr, /* code_begin */ true,
-                                           bUnitName);
+                                           &bUnitName);
     const Relocation *eR = getSegmentReloc(EntryAddr+8, /* code_begin */ false,
-                                           eUnitName);
-    assert (bUnitName == eUnitName &&
-            "Relocation symbols for code_begin and code_end: unit names don't match");
-
+                                           &eUnitName);
+    DEBUG(dbgs() << "UnitName:" << bUnitName << " " << eUnitName << "\n");
     BinaryFunction *bCF, *eCF;
+
     bCF = getSegmentFunction(bR->Value, bUnitName, /* code_begin */ true);
     eCF = getSegmentFunction(eR->Value, eUnitName, /* code_begin */ false);
 
@@ -3087,28 +3110,40 @@ void RewriteInstance::updateCodeSegmentTable ()  {
     uint64_t eAddr = eCF->getAddress();
     bool bMoved = bCF->hasValidIndex();
     bool eMoved = eCF->hasValidIndex();
-
+    DEBUG(dbgs()
+          << bUnitName << " begin "
+          << bCF->getPrintName() << " at 0x" + Twine::utohexstr(bAddr)
+          << " " << (bMoved ? "moved" : "stayed")
+          << "\n");
+    DEBUG(dbgs()
+          << eUnitName << " end "
+          << eCF->getPrintName() << " at 0x" + Twine::utohexstr(eAddr)
+          << " " << (eMoved ? "moved" : "stayed")
+          << "\n");
     // Function reordering can affect code_begin and code_end.
     // Block reordering within a function can affect code_end but
     // not code_begin because block reordering preserves entry blocks
     // Check whether the functions were moved
     bool bNeedsUpdate = bMoved;
     bool eNeedsUpdate = eMoved;
-    // Check whether the block containing code_end was moved
-    if (opts::ReorderBlocks != ReorderBasicBlocks::LT_NONE) {
-        auto SymbolAddress = eR->Value;
-        uint64_t newSymbolAddress =
-          eCF->translateInputToOutputAddress(SymbolAddress);
-        if (newSymbolAddress != SymbolAddress) {
-          eNeedsUpdate = true;
-          if (!eMoved) eMoved = true;
-        }
-      }
+    // TODO: check whether the block containing code_end was moved
+    // if (opts::ReorderBlocks != ReorderBasicBlocks::LT_NONE) {
+    //     auto SymbolAddress = eR->Value;
+    //     uint64_t newSymbolAddress =
+    //       eCF->translateInputToOutputAddress(SymbolAddress);
+    //     if (newSymbolAddress != SymbolAddress) {
+    //       eNeedsUpdate = true;
+    //       eMoved = true;
+    //     }
+    //   }
 
-    while (bAddr < eAddr && (bMoved || eMoved)) {
+    DEBUG(dbgs() << "NeedUpdate? " << bNeedsUpdate << eNeedsUpdate << "\n");
+    while ((bAddr < eAddr) && (bMoved || eMoved)) {
       if (bMoved) {
         // find the next function that hasn't moved, or code_end
-        bCF = getSegmentFunction(bAddr + bCF->getSize() + 1,
+        DEBUG(dbgs() << "Next fun in 0x" + Twine::utohexstr(bCF->getSize())
+              << "\n");
+        bCF = getSegmentFunction(bAddr + bCF->getMaxSize() + 1,
                                  bUnitName,/*code_begin*/true);
         bAddr = bCF->getAddress();
         bMoved = bCF->hasValidIndex();
@@ -3119,14 +3154,26 @@ void RewriteInstance::updateCodeSegmentTable ()  {
         eAddr = eCF->getAddress();
         eMoved = eCF->hasValidIndex();
       }
+      DEBUG(dbgs()
+            << bUnitName << " begin "
+            << bCF->getPrintName() << " at 0x" + Twine::utohexstr(bAddr)
+            << " " << (bMoved ? "moved" : "stayed")
+            << "\n");
+      DEBUG(dbgs()
+            << eUnitName << " end "
+            << eCF->getPrintName() << " at 0x" + Twine::utohexstr(eAddr)
+            << " " << (eMoved ? "moved" : "stayed")
+            << "\n");
     }
 
     // CR gyorsh: handle the empty segment case correctly.
     if (bNeedsUpdate) {
-      updateSegmentReloc(EntryAddr, bR, bCF->getAddress());
+      updateSegmentReloc(EntryAddr, bR, bUnitName,
+                         bCF->getAddress());
     }
     if (eNeedsUpdate) {
-      updateSegmentReloc(EntryAddr+8, bR, eCF->getAddress()+eCF->getSize());
+      updateSegmentReloc(EntryAddr+8, eR, eUnitName,
+                         eCF->getAddress()+eCF->getSize());
     }
   }
 
@@ -3307,8 +3354,13 @@ void RewriteInstance::emitFunctions() {
   Streamer->InitSections(false);
 
   // Mark beginning of "hot text".
-  if (BC->HasRelocations && opts::HotText && !opts::HotFunctionsAtEnd)
-    Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_start"));
+  if (BC->HasRelocations && (opts::HotText || opts::OCaml)
+      && !opts::HotFunctionsAtEnd) {
+    if (opts::HotText)
+      Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_start"));
+    if (opts::OCaml)
+      Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("caml_hot__code_begin"));
+  }
 
   // Sort functions for the output.
   std::vector<BinaryFunction *> SortedFunctions =
@@ -3357,9 +3409,12 @@ void RewriteInstance::emitFunctions() {
     if (BC->HasRelocations && !ColdFunctionSeen &&
         CurrentIndex >= LastHotIndex) {
       // Mark the end of "hot" stuff.
-      if (opts::HotText && !opts::HotFunctionsAtEnd) {
+      if ((opts::HotText || opts::OCaml)&& !opts::HotFunctionsAtEnd) {
         Streamer->SwitchSection(BC->MOFI->getTextSection());
-        Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_end"));
+        if (opts::HotText)
+          Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_end"));
+        if (opts::OCaml)
+          Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("caml_hot__code_end"));
       }
       ColdFunctionSeen = true;
 
@@ -3382,10 +3437,13 @@ void RewriteInstance::emitFunctions() {
       }
       DEBUG(dbgs() << "BOLT-DEBUG: first cold function: " << Function << '\n');
 
-      if (opts::HotText && opts::HotFunctionsAtEnd) {
+      if ((opts::HotText || opts::OCaml)&& opts::HotFunctionsAtEnd) {
         Streamer->SwitchSection(BC->MOFI->getTextSection());
         Streamer->EmitCodeAlignment(BC->PageAlign);
-        Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_start"));
+        if (opts::HotText)
+          Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_start"));
+        if (opts::OCaml)
+          Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("caml_hot__code_begin"));
       }
     }
 
@@ -3415,9 +3473,13 @@ void RewriteInstance::emitFunctions() {
     }
   }
 
-  if ((!ColdFunctionSeen || opts::HotFunctionsAtEnd) && opts::HotText) {
+  if ((!ColdFunctionSeen || opts::HotFunctionsAtEnd)
+      && (opts::HotText || opts::OCaml)) {
     Streamer->SwitchSection(BC->MOFI->getTextSection());
-    Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_end"));
+    if (opts::HotText)
+      Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("__hot_end"));
+    if (opts::OCaml)
+      Streamer->EmitLabel(BC->Ctx->getOrCreateSymbol("caml_hot__code_begin"));
   }
 
   if (!BC->HasRelocations && opts::UpdateDebugSections)
@@ -3863,6 +3925,7 @@ void RewriteInstance::emitDataSection(MCStreamer *Streamer,
       DEBUG(dbgs() << "BOLT-DEBUG: emitting relocation for symbol "
             << Relocation.Symbol->getName() << " at offset 0x"
             << Twine::utohexstr(Relocation.Offset)
+            << " type " << Relocation.Type
             << " with size "
             << Relocation::getSizeForType(Relocation.Type) << '\n');
       auto RelocationSize = Relocation.emit(Streamer);
@@ -4525,6 +4588,7 @@ void RewriteInstance::patchELFSymTabs(ELFObjectFile<ELFT> *File) {
         std::function<size_t(StringRef)> AddToStrTab) {
     auto StringSection = cantFail(Obj->getStringTableForSymtab(*Section));
     unsigned IsHotTextUpdated = 0;
+    unsigned IsOCamlHotTextUpdated = 0;
     unsigned IsHotDataUpdated = 0;
 
     std::map<const BinaryFunction *, uint64_t> IslandSizes;
@@ -4686,6 +4750,10 @@ void RewriteInstance::patchELFSymTabs(ELFObjectFile<ELFT> *File) {
                             *SymbolName == "__hot_end"))
         updateSymbolValue(*SymbolName, IsHotTextUpdated);
 
+      if (opts::OCaml && (*SymbolName == "caml_hot__code_begin" ||
+                            *SymbolName == "caml_hot__code_end"))
+        updateSymbolValue(*SymbolName, IsOCamlHotTextUpdated);
+
       if (opts::HotData && (*SymbolName == "__hot_data_start" ||
                             *SymbolName == "__hot_data_end"))
         updateSymbolValue(*SymbolName, IsHotDataUpdated);
@@ -4704,6 +4772,9 @@ void RewriteInstance::patchELFSymTabs(ELFObjectFile<ELFT> *File) {
 
     assert((!IsHotTextUpdated || IsHotTextUpdated == 2) &&
            "either none or both __hot_start/__hot_end symbols were expected");
+    assert((!IsOCamlHotTextUpdated || IsHotTextUpdated == 2) &&
+           "either none or both caml_hot__code_begin/caml_hot__code_end \
+            symbols were expected");
     assert((!IsHotDataUpdated || IsHotDataUpdated == 2) &&
            "either none or both __hot_data_start/__hot_data_end symbols were expected");
 
@@ -4725,12 +4796,17 @@ void RewriteInstance::patchELFSymTabs(ELFObjectFile<ELFT> *File) {
     if (opts::HotText && !IsHotTextUpdated && !PatchExisting) {
       addSymbol("__hot_start");
       addSymbol("__hot_end");
-      }
+    }
 
-      if (opts::HotData && !IsHotDataUpdated && !PatchExisting) {
-        addSymbol("__hot_data_start");
-        addSymbol("__hot_data_end");
-      }
+    if (opts::OCaml && !IsOCamlHotTextUpdated && !PatchExisting) {
+      addSymbol("caml_hot__code_begin");
+      addSymbol("caml_hot__code_end");
+    }
+
+    if (opts::HotData && !IsHotDataUpdated && !PatchExisting) {
+      addSymbol("__hot_data_start");
+      addSymbol("__hot_data_end");
+    }
   };
 
   // Update dynamic symbol table.
