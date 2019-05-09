@@ -487,13 +487,13 @@ void ReorderFunctions::runOnFunctions(BinaryContext &BC,
       if (FuncsFile) {
         auto Name = Func->getSymbol()->getName();
         const auto SlashPos = Name.find('/');
-          if (SlashPos != std::string::npos) {
-            // Avoid duplicates for local functions.
-            if (Name.find('/', SlashPos + 1) != std::string::npos)
-              continue;
-            Name = Name.substr(0, SlashPos);
-          }
-          *FuncsFile << Name.data() << "\n";
+        if (SlashPos != std::string::npos) {
+          // Avoid duplicates for local functions.
+          if (Name.find('/', SlashPos + 1) != std::string::npos)
+            continue;
+          Name = Name.substr(0, SlashPos);
+        }
+        *FuncsFile << Name.str() << "\n";
       }
 
       if (LinkSectionsFile) {
