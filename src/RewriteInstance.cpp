@@ -3149,14 +3149,16 @@ void RewriteInstance::updateCodeSegmentTable ()  {
         // find the next function that hasn't moved, or code_end
         DEBUG(dbgs() << "Next fun in 0x" + Twine::utohexstr(bCF->getSize())
               << "\n");
-        bCF = getSegmentFunction(bAddr + bCF->getMaxSize() + 1,
+        bCF = getSegmentFunction(bAddr + bCF->getMaxSize(), // +1 ?
                                  bUnitName,/*code_begin*/true);
+        assert (bAddr < bCF->getAddress()); // progress guarantee
         bAddr = bCF->getAddress();
         bMoved = bCF->hasValidIndex();
       }
       if (eMoved) {
         // find the previous function that hasn't move, or code_begin
         eCF = getSegmentFunction(eAddr-1, bUnitName, /*code_begin*/false);
+        assert (eAddr > eCF->getAddress()); // progress guarantee
         eAddr = eCF->getAddress();
         eMoved = eCF->hasValidIndex();
       }
