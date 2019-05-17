@@ -3158,10 +3158,10 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout,
   }
 
   // Print side by side new and old layout sequences
-  dbgs() << "BOLT-INFO: Basic block reorder " << getPrintName()
-         << " at 0x" << Twine::utohexstr(getAddress())
-         << " size 0x" << Twine::utohexstr(getSize()) << "\n";
-  assert (BasicBlocksLayout.size() == NewLayout.size());
+  DEBUG(dbgs() << "BOLT-INFO: Basic block reorder " << getPrintName()
+        << " at 0x" << Twine::utohexstr(getAddress())
+        << " size 0x" << Twine::utohexstr(getSize()) << "\n";
+        assert (BasicBlocksLayout.size() == NewLayout.size()));
   for (auto i = 0; i < BasicBlocksLayout.size(); i++) {
     auto *BBold = BasicBlocksLayout[i];
     auto *BBnew = NewLayout[i];
@@ -3169,7 +3169,7 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout,
     auto pos = (j == MapBB.end()? -1 : j->second);
     auto k = MapBBnew.find(BBold);
     auto kpos = (k == MapBBnew.end()? -1 : k->second);
-    dbgs() << i << "\t"
+    DEBUG(dbgs() << i << "\t"
            << pos << "\t"
            << i << ":" << BBold->getName()
            << ":0x" << Twine::utohexstr(BBold->getInputOffset())
@@ -3178,7 +3178,7 @@ void BinaryFunction::dumpMappingText(const BasicBlockOrderType &NewLayout,
            << "\t"
            << pos << ":" << BBnew->getName()
            << ":0x" << Twine::utohexstr(BBnew->getInputOffset())
-           << "\n";
+          << "\n");
   }
   if (!OutputLayout) return;
   // Print layout to file for external processing
