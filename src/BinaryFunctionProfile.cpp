@@ -139,8 +139,8 @@ bool BinaryFunction::recordTrace(
     // Check for bad LBRs.
     if (!BB->getSuccessor(NextBB->getLabel())) {
       DEBUG(dbgs() << "no fall-through for the trace:\n"
-                   << "  " << FirstLBR << '\n'
-                   << "  " << SecondLBR << '\n');
+            << "  0x" << Twine::utohexstr(FirstLBR.To) << '\n'
+            << "  0x" << Twine::utohexstr(SecondLBR.From) << '\n');
       return false;
     }
 
